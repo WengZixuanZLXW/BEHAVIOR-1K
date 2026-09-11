@@ -31,7 +31,26 @@ This file is only the operational summary.
 | BDDL task + cached instance | `bddl3/.../coop_two_apples_pomaria/`, `feasibility_verify/{sample,verify}_coop_task_instance.py` | **done, GPU-verified** 2026-09-07 |
 | M9 wiring (BehaviorTask + `check_goal` termination) | `coop2/behavior_env/coop_env.py` | **done**, commits `e4d28a98`…`5fda3d28` |
 
-## Where we are (2026-09-08, evening)
+## Where we are (2026-09-11)
+
+Twelve robots as three teams of four run all three topologies on
+`coop_nine_apples_hall` for 8000 steps without stalling. The 2026-09-11 section
+below has the numbers, the defects found getting there, and why that table is
+already stale.
+
+**Anything measured before 2026-09-11 is not comparable to anything measured
+after**, on three counts, each enough on its own: the travel charge halved
+(60 -> 30 ticks/m), every robot but two was shown to the others under another
+robot's name, and the prompt's object listing changed shape. Re-run rather than
+compare across that line.
+
+What is left: **M7 step 3** (more seeds per topology for the metrics table) and
+**M8** (decentralized topology). Note `build_results_table.py` cannot read these
+runs: it skips any folder without `team_score.json`, which the runners do not
+write while `team_score.enabled` is False -- post-episode code that only runs
+after a full GPU episode, the same defect class as the rest of that file.
+
+## The two-apple baseline (2026-09-08, evening)
 
 **All three topologies solve the BDDL activity.** `individual`,
 `broadcast_chain` and `centralized` each reached `coop_two_apples_pomaria`'s goal
@@ -54,16 +73,6 @@ that is what M7 step 3's remaining seeds are for.
 OmniGibson's `BehaviorTask` from the cached instance when `bddl_activity` is set,
 and `compiled_task.check_goal` is the *only* authority over `terminated`.
 Acceptance criteria are in PORTING_PLAN.md section 7.
-
-What is left:
-
-1. **M7 step 3** -- more seeds per topology for the metrics table. Note
-   `build_results_table.py` cannot read these runs: it skips any folder without
-   `team_score.json`, which the runners do not write while `team_score.enabled`
-   is False. Same defect class as the rest of that file (see "The recurring
-   defect class" in the memory notes) -- post-episode code that only runs after
-   a full GPU episode.
-2. **M8** -- decentralized topology.
 
 **Scene note:** the earlier target was `house_single_floor` (Rs_int measured
 unusable, 96.2 % of sampled base poses reject). The BDDL task is on
@@ -301,6 +310,10 @@ those few frames is harmless because `place_robots` zeroes velocity on arrival.
 `feasibility_verify/measure_primitive_latency.py`. One tick is one `env.step`,
 i.e. 1/30 s at the default action frequency.
 
+**Measured at 60 ticks/m, which is no longer the charge.** Halve every travel
+figure below for the current 30, and note that the budgeting paragraph at the
+end is stated in the old units.
+
 | primitive | ticks | seconds | what sets it |
 |---|---|---|---|
 | `grasp` | **101** (n=4, no spread) | 3.4 | one `_settle_robot` |
@@ -310,7 +323,7 @@ i.e. 1/30 s at the default action frequency.
 | any rejected precondition | **51** | 1.7 | `apply_ref` settles after catching |
 
 So ~100 ticks is the floor of every physical primitive, and `navigate_to` is the
-only one whose cost varies -- `DEFAULT_TRAVEL_TICKS_PER_METER` (60) is charged on
+only one whose cost varies -- `DEFAULT_TRAVEL_TICKS_PER_METER` (60 then, 30 now) is charged on
 the distance to the **sampled standing pose**, not to the object's centre. Verified
 against the `[nav]` lines: 3.8 m -> 227 ticks, 2.1 m -> 129, 0.9 m -> 53. Do not fit
 ticks against centre distance; the pose is anywhere in the annulus and the fit
@@ -516,6 +529,228 @@ apples correctly on its first team call where luna needed a second round:
 One seed, so this is not a ranking -- but the mechanism behind the gap is
 visible, not inferred: one planning round against two.
 
+## Twelve robots, three teams, 8000 steps (2026-09-11)
+
+The day's work, in the order the defects surfaced. Every number below is read
+off a run folder, not estimated.
+
+### The timeline was drawing idling as work
+
+A team hold and a real primitive are both FSM state X, so only the plan's
+specification separates them -- and most holds were never written down.
+``_recall_holders`` ends one by assigning ``plan.status = INTERRUPTED``, which
+it has to: ``needs_new_plan()`` asks the plan, and a member left in R with a
+live one hangs the run. But nothing then *filed* it, so the plan sat in
+``logger.current_plans`` until the replacement overwrote it and was gone. Only
+the hold still running at episode end survived, archived by
+``terminate_unfinished_plans`` -- which is why every filed hold in
+``centralized_agents12_..._045959`` ends at exactly 4000.
+
+Measured on that run: **87 % of the idling (11 612 of 13 303 robot-steps) had no
+record at all.** agent_5 held 588->2296, 43 % of the episode, and plan_logs said
+nothing.
+
+Two fixes, and they are separate on purpose:
+
+* ``log_plan_ended_elsewhere`` files a plan something else already marked
+  terminal, and ``_sync_committed_plans`` calls it on the branch that used to
+  fall through. That branch also reaches ``_reset_symbolic_action_state``, which
+  it never did before -- see the next item.
+* The timeline no longer *depends* on a hold having been filed. A step-gap can
+  only open while the world is moving, and the world does not move while any
+  agent is in R or W, so an env_step no plan covers is a robot standing in X
+  with nothing to do. Reading the gaps makes runs recorded before the fix
+  legible too.
+
+Drawing them needed one more change. ``_inside_hold`` asked whether a whole span
+sat inside one hold range, and ``_coalesce`` folds the sub-pixel R/W seam between
+a primitive and the hold that follows it -- so the merged bar belongs to neither
+and the bars worth shading were exactly the ones it refused. Spans are cut at
+hold boundaries now, interpolating the split from the env_step range, which is
+exact while the env is stepping.
+
+### A recalled hold left its 600-tick WAIT running
+
+The same missing branch. ``_recall_holders``' docstring claimed the wrapper
+aborted the stale primitive "when the replacement plan is committed"; it did
+not, because the abort sat behind the pending/executing test the recalled hold
+fails. So the next plan's first action could not be issued and **reported the
+WAIT's outcome as its own**:
+
+```
+navigate_to {'target': 'apple.n.01_8'}  3288-3441  success  | prim: WAIT
+   outcome: {"primitive": "WAIT", "ticks": 600, "started_env_step": 2840}
+```
+
+``started_env_step 2840`` is the tell: that WAIT belongs to the previous plan.
+The robot stood still for 153 steps, then tried to grasp from 5.63 m and failed
+TOO_FAR. **13 actions in that one run.**
+
+### A plan that only waits is a decision, not a missing action
+
+``_ensure_task_terminal_action`` guards against a model that states a goal and
+lists only navigation. It was also firing on plans that listed only ``wait``.
+Asked to plan for a team whose apples were all claimed, the model answered
+``[wait(600)]`` for all four members -- "wait rather than duplicate their
+targets" -- and the guard appended ``place_on_top`` to each, so every one ran
+600 ticks and then failed PRE_CONDITION for placing with an empty gripper.
+Thirteen plans. Replaying the real seq-12 response through the real parse path
+is how it was pinned, not by reading.
+
+### The fallback plan was crafter's
+
+``_generate_fallback_plan`` -- what a robot gets when an LLM call raises -- was
+``move(left, 2)`` then ``collect(wood)``, carried over with the port. Neither
+verb exists in L2, so the engine answered ``invalid`` and ``do``. One wait
+instead: the plan has to *do* something, because the loop does not step the env
+while any agent is not ready, and waiting is the only honest thing a robot can
+do when the round trip that would have told it something is what just failed.
+
+### A request can freeze the whole simulation, so it has a deadline now
+
+R freezes the env, so a hanging call stalls every robot, not one. One Team Plan
+Generation in ``individual_agents12_..._060731`` spent its **whole 128k
+completion budget on reasoning tokens**, emitted nothing parseable, and took
+**552 s -- 42 % of that run's wall clock**, during which env_step went
+3119 -> 3120. Healthy calls in the same run averaged 7.3 s; the slowest was 10.6.
+
+``LLMClient.REQUEST_TIMEOUT_SECONDS = 100``. The SDK's own ``max_retries`` is
+off wherever it applies, or the bound is not a bound: the timeout is per
+attempt, so two retries make 100 s mean 300 s. A timeout raises, which lands on
+the hold-position fallback above.
+
+Note ``llm_usage.json``'s ``total_api_latency_seconds`` does **not** include
+failed calls -- the error path does not record latency -- so that 552 s is
+invisible there. ``total_llm_errors`` is the only hint.
+
+### A chain team decided out of turn
+
+Per robot this was solved already: ``handle_interrupt`` calls
+``_wait_for_previous_speaker()`` *before* deciding, and a RESUME still
+broadcasts (``resume_ack``), because with only REPLAN speaking 81 % of messages
+died where they landed. The team layer had neither. ``ChainTeamBrain`` overrode
+``before_plan`` only, so one message interrupted every team behind the sender
+and they all decided at once. On ``broadcast_chain_agents12_..._064820`` team_0
+spoke at 183.28, team_1 and team_2 both went to I in that instant, team_2
+finished deciding at 191.58, and team_1 did not relay until 235.14 -- **team_2's
+decision was 44 s older than the information it was ordered behind.**
+
+``before_interrupt_decision`` waits for the relay and folds it into the prompt;
+``after_interrupt`` relays whatever was decided. Blocking is safe here and is
+not on the planning path: every team behind the sender is already in I, so none
+of them needs the world.
+
+Two things a team has that a robot does not, and both bit:
+
+* **The exit cannot be readiness.** Per robot, ``_execute_flow`` broadcasts in
+  step 4 and ``create_agent_thread`` calls ``set_ready()`` only once the handler
+  returns, so speaking strictly precedes going ready. A team inverts that:
+  ``_decided.set()`` releases four members who go ready while ``after_interrupt``
+  has not sent. The round therefore closes *after* the send, and
+  ``has_open_interrupt_round()`` is what the team behind reads.
+* **Round scoping cannot use the clock.** The broker writes timestamps relative
+  to the run origin and ``_interrupt_opened`` is an absolute ``time.time()``;
+  comparing them is a few seconds against 1.7e9, false forever. Fingerprint what
+  was already in hand instead.
+
+Verified on 8000 steps: **11/11 cascade rounds ordered** -- team_1 and team_2
+enter I in the same instant, and team_2's span always ends after team_1's relay
+(it holds 4-10 s in I for it). One relay per team per round, resume rounds
+included. The 30 s backstop never fired.
+
+The **planning path is still on the old readiness test** and is a known hole:
+``_await_speakers`` releases as soon as the team ahead is `ready`, and a team
+ahead that is *executing* is ready, so team_2 planned alone at t=126.66 and
+154.32 with nobody having spoken to it. Tightening it is not a one-line change:
+blocking there deadlocks, because the team ahead may have robots that need the
+world to finish. The waiting would have to happen in a hold (X), not in R.
+
+### Every robot but two was shown to the others under another robot's name
+
+The worst of the day. ``entity_id_for`` sent robots through the category
+fallback, which numbers by scene-enumeration order -- alphabetical: agent_0,
+agent_1, agent_10, agent_11, agent_2, ... -- while robots[0] took its id from the
+task scope and so consumed no number. Every robot after agent_1 came out
+shifted:
+
+| prim name (what "you are ..." says) | shown to everyone else as |
+|---|---|
+| agent_0 | agent.n.01_1 |
+| agent_1 | agent_1 |
+| agent_10 | **agent_2** |
+| agent_11 | **agent_3** |
+| agent_2 | **agent_4** |
+| agent_3 | **agent_5** |
+| agent_4 ... agent_9 | agent_6 ... agent_11 |
+
+Verified 12/12 on ``broadcast_chain_agents12_..._133540``: each robot's own
+block is missing exactly the id it is hidden under. The shifted names live in
+the same string space as the real ones, and the real ones are what everything
+else uses -- the header, the team plan's keys, ``held_objects``. So a robot was
+told "you are agent_2", saw a teammate called agent_2 in the same room, and
+**every cross-robot reference in every prompt named the wrong robot.** Only
+agent_0 and agent_1 happened to be right, which is why it survived.
+
+A robot is its own id now, and ``adopt_task_scope`` skips the agent binding.
+Nothing is lost: BDDL binds ``agent.n.01_1`` to robots[0] and to no other robot
+*by design* -- declaring a second agent crashes the sampler -- so adopting it
+renamed one robot of twelve into a different scheme than the eleven beside it,
+and no goal predicate mentions an agent anyway.
+
+### "You can do:" folded into the room listing
+
+They were two sections over the same objects, so each was printed twice and the
+reader had to join them by id: 76 object lines then 65 more, per robot, twelve
+robots to a team prompt. The verbs sit on the line that names the thing now:
+
+```
+empty_room_0:
+  - agent_1  (teammate)
+  - apple.n.01_1  -> unreachable, navigate_to  [35.0 m away]
+  - coffee_table.n.01_1  -> place_on_top, navigate_to
+```
+
+One robot block went **6243 chars / 162 lines -> 5121 / 95**, about 800 lines a
+prompt. Anything the rooms did not carry -- a held object is in no room -- is
+listed under "Also available" rather than dropped.
+
+Two things broke on this and had to be found rather than predicted:
+``_first_useful_target`` was parsing the old section, so a follower's report to
+its leader silently lost the one field the leader allocates on; and the prompt
+rules still told the model to read ids "under You can do:".
+
+### The prompts costed travel at twice the real rate
+
+``DEFAULT_TRAVEL_TICKS_PER_METER`` halved to 30 and both prose copies of it
+still said **60**, so every plan was costed against a world twice as expensive
+as the one it ran in. Nothing failed, because prose cannot disagree with code
+loudly. ``test_symbolic_contention`` now reads ``prompts.py`` and fails if the
+two part -- by reading the source rather than importing it, since that file
+stubs OmniGibson out and ``prompts.py`` keeps the literal on purpose.
+
+### The sweep, and what it is worth
+
+Three topologies, 12 robots as 3 teams of 4, ``coop_nine_apples_hall``, 8000
+steps, seed 0, gpt-5.6-luna. No stalls, no tracebacks, all three ran the full
+budget and none reached the BDDL goal.
+
+| topology | apples | plans | ok | fail | holds | idle % | LLM | msgs | tokens |
+|---|---|---|---|---|---|---|---|---|---|
+| individual | **8/9** | 120 | 82 | 27 | 54 | 26.4 | 29 | 0 | 363 269 |
+| centralized | 6/9 | 156 | 89 | 57 | 76 | 27.3 | 93 | 42 | 859 999 |
+| broadcast_chain | 6/9 | 142 | 64 | 48 | 68 | 36.9 | 55 | 24 | 694 682 |
+
+One seed, and communication bought nothing here -- but **this table is already
+stale**: it predates the robot-naming fix, the prompt merge and the travel-rate
+correction, all of which change what the model is shown. Treat it as the
+"before" of that change and re-run for the real one. The idle column is the team
+barrier's price, and it is honest now rather than drawn as work.
+
+Model pinning: ``AZURE_OPENAI_MODEL=gpt-5.6-luna`` is in ``.env``. Runs before
+2026-09-11 are a mix of luna and terra (``llm_usage.json`` records which), and
+that column has to be aligned before any cross-topology comparison means
+anything.
+
 ## Open defects
 
 Fixed ones are not listed here -- the fix and its reasoning live in the commit
@@ -533,6 +768,23 @@ and in the code comment at the site. What is still true:
    ``batch_size=16`` OOMs a 16 GB card in ``mg.warmup()``; the default is 2.
    cuRobo is currently **not used at all** (user decision): pose validity comes
    from the trav map plus geometry.
+3. **The chain's planning path still orders on readiness.** `_await_speakers`
+   releases as soon as the team ahead is `ready`, and a team ahead that is
+   *executing* is ready -- so a team can reach its own barrier and plan with
+   nobody having spoken to it. The interrupt path was fixed (2026-09-11
+   section); this one cannot be, the same way: blocking there freezes the world
+   the team ahead needs to finish, so the waiting would have to happen in a
+   hold (X) rather than in R.
+4. **A failed LLM call is invisible in the metrics.** `_record_llm_error` does
+   not record latency, so `llm_usage.json`'s `total_api_latency_seconds` omits
+   it -- a 552 s call that returned nothing showed up only as
+   `total_llm_errors: 1`. The 100 s timeout caps the damage; it does not make
+   it visible.
+5. **`coop2_trace.json` is always empty.** `plan_env_wrapper` logs
+   `plan_committed` events into the repair shim's `Coop2TraceLogger`, whose
+   `log()` discards them. Harmless while repair is unported -- nothing reads
+   the file -- but the events are gone, and `plan_logs.json` does not carry the
+   remaining-action list they had.
 
 See also "Open, not yet diagnosed" near the end of this file for behaviour that
 is understood but not yet explained.
@@ -560,6 +812,22 @@ python -u -m coop2.experiment.run_individual --agents 2 --steps 4000 --seed 0 \
   --model gpt-5.6-luna --llm-quiet
 # run_centralized / run_broadcast_chain take the same flags.
 # Output lands in coop2/runs/<topology>_agents<N>_..._<timestamp>/.
+
+# Twelve robots as three teams of four on the nine-apple hall -- the 2026-09-11
+# sweep, about 17 minutes a topology. --time-limit-seconds 0 is required or the
+# 120 s default decides the episode length instead of --steps; --no-video is
+# most of the difference between 17 minutes and an hour.
+OMNIGIBSON_HEADLESS=1 python -u -m coop2.experiment.run_broadcast_chain \
+  --agents 12 --team-size 4 --steps 8000 --seed 0 --time-limit-seconds 0 \
+  --scene hall_glass_ceiling --room empty_room_0 \
+  --bddl-activity coop_nine_apples_hall \
+  --goal "Put all nine apples on coffee_table.n.01_1." \
+  --model gpt-5.6-luna --llm-quiet --no-video
+# Do NOT wrap this in `conda run`: it buffers stdout until the process exits, so
+# an hour-long run is unmonitorable. Call the env's python directly.
+
+# Delete run folders (dry run by default; --yes to actually delete).
+python coop2/runs/clean_runs.py
 
 # Watch it in a window. --gui is the ONLY way: --show is a no-op (the
 # visualisation wrapper is a stub by design) and OMNIGIBSON_HEADLESS is not
@@ -1110,6 +1378,18 @@ Same shape as #2, where four rounds of guessing lost to one cProfile run.
   This is what exposed #4: tick counts rising linearly with env_step and never ending.
 - `[nav]` lines -- sampled pose, distance and travel ticks charged, one per navigate.
 - `NO_SPACE_AROUND_TARGET` metadata carries `rejected_by` and `target_xy`.
+- `llm_calls.jsonl` + `llm_calls.log` -- every prompt and response, machine- and
+  human-readable. `python -m coop2.cognitive.agent.llm_io_log <run_dir>` renders
+  the log. This is what settled the wait-only-plan question: replaying the real
+  response through the real parse path, rather than reading the parser.
+- `agent_timeline.png` -- per-agent FSM over wall clock, with team lanes,
+  messages as arrows, env_step ranges inside the bars, and holds shaded apart
+  from real execution. Redraw an existing run with
+  `python -m coop2.experiment.agent_timeline <run_dir>`.
+- `COOP2_TEAM_VERBOSE=1` -- team barrier and chain-ordering decisions, one line
+  each. `kill -USR1 <pid>` dumps every thread's stack (faulthandler is
+  registered by the runners), which is the only thing that has ever explained a
+  silent hang; `StallWatch` prints the not-ready set and why, every 25 s.
 
 ## Open, not yet diagnosed
 
