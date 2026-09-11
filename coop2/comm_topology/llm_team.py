@@ -166,6 +166,10 @@ class TeamBrain:
         # reported against, so the interrupt path and the planning path cannot
         # both answer the same question.
         self._answered: set = set()
+        # Which members the broker is about to interrupt, announced before it
+        # interrupts any of them. Empty means "no announcement", and the barrier
+        # falls back to the whole team.
+        self._expected_interrupt: set = set()
         #: Plans produced by the last team call, drained by their owners.
         self._pending_plans: Dict[str, SymbolicPlan] = {}
         #: Members that have been told they may hold this round and have not yet
@@ -619,9 +623,6 @@ class TeamBrain:
                 self._interrupted.discard(agent_id)
                 return self._pending_decisions.pop(agent_id)
 
-            if not self._interrupted:
-                # First arrival of a new round: nobody has decided yet.
-                self._decided.clear()
             self._interrupted.add(agent_id)
             # Wait only for teammates that are actually *in* I. The barrier used
             # to require every member, on the premise that "a message interrupts
@@ -677,21 +678,46 @@ class TeamBrain:
             self._interrupted.discard(agent_id)
         return None
 
+    def expect_interrupt(self, names: List[str]) -> None:
+        """The broker is about to interrupt @names. Opens a new barrier round.
+
+        Called before any of them is actually stopped, so the barrier knows how
+        many to wait for instead of inferring it from who happens to be in I --
+        an inference that closed early and spent one LLM call per member.
+        """
+        with self._lock:
+            self._expected_interrupt = set(names)
+            self._interrupted.clear()
+            self._pending_decisions = {}
+            self._decided.clear()
+
     def _outstanding(self) -> List[str]:
-        """Teammates still in I that have not reached the interrupt barrier.
+        """Members this round is still waiting for.
+
+        The set comes from the broker's announcement, which names only the
+        members a delivery actually stops -- a member in R is not interrupted,
+        so the barrier must not wait for it. With no announcement (a topology
+        that never calls it, or a message that interrupted nobody) it falls back
+        to the whole team, which is the old behaviour.
 
         Callers must hold ``_lock``.
         """
-        from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
+        expected = set(self._expected_interrupt)
+        if not expected:
+            # Nothing was announced -- a topology that does not use the hook, or
+            # a member interrupted by something other than a team delivery. Fall
+            # back to inspecting state: whoever is in I is coming, whoever is
+            # not never will be. That is racy under a real delivery, which is
+            # exactly why the broker announces; here it is the only signal.
+            from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
 
-        pending = []
-        for name in self.member_ids:
-            if name in self._interrupted:
-                continue
-            member = self.members.get(name)
-            if member is not None and member.state is AgentState.I:
-                pending.append(name)
-        return pending
+            expected = {
+                name for name in self.member_ids
+                if self.members.get(name) is not None
+                and self.members[name].state is AgentState.I
+            }
+            expected |= self._interrupted
+        return [name for name in expected if name not in self._interrupted]
 
     def _decide_interrupts(self, messages: List[Dict]) -> Dict[str, Any]:
         members = [self.members[name] for name in self.member_ids if name in self.members]

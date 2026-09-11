@@ -39,6 +39,45 @@ class MessageBroker:
         # Optional wrapper reference for state change notifications
         self.wrapper = None
     
+    def _will_interrupt(self, recipient, message_record: Dict) -> bool:
+        """Would delivering @message_record stop @recipient?
+
+        The same predicate ``_deliver`` applies, lifted out so the interrupt set
+        can be announced before the delivery loop changes anybody's state.
+        """
+        from .agent import AgentState
+
+        metadata = message_record.get('metadata') or {}
+        message_type = metadata.get("type") or metadata.get("message_type")
+        is_execution_interrupt = (
+            bool(metadata.get("interrupts_execution")) or message_type == "leader_broadcast"
+        )
+        is_repair_message = is_coop2_repair_message(message_record)
+        return (
+            recipient.state == AgentState.W
+            or (recipient.state == AgentState.X
+                and (is_repair_message or is_execution_interrupt))
+        )
+
+    def _announce_interrupts(self, message_record: Dict, recipient_ids: List[str]) -> None:
+        """Tell each addressed team which of its members this delivery will stop."""
+        expected: List = []          # [(brain, [names])], keyed by identity
+        for recipient_id in recipient_ids:
+            recipient = self.agents.get(recipient_id)
+            if recipient is None or not self._will_interrupt(recipient, message_record):
+                continue
+            brain = getattr(recipient, "brain", None)
+            if brain is None or not hasattr(brain, "expect_interrupt"):
+                continue
+            for known_brain, names in expected:
+                if known_brain is brain:
+                    names.append(recipient_id)
+                    break
+            else:
+                expected.append((brain, [recipient_id]))
+        for brain, names in expected:
+            brain.expect_interrupt(names)
+
     def _deliver(self, message_record: Dict, recipient_ids: List[str],
                  timestamp: float, env_step: Optional[int]) -> None:
         """Put @message_record in each recipient's buffer, interrupting if due.
@@ -51,6 +90,19 @@ class MessageBroker:
         sender = message_record['sender']
         content = message_record['content']
         metadata = message_record.get('metadata') or {}
+
+        # Announce the interrupt set before interrupting anybody. A team's
+        # interrupt barrier has to know how many members are coming, and this
+        # loop interrupts them one at a time: the first member's thread can be
+        # inside handle_interrupt before the last one is even in I, and a
+        # barrier that inferred the set from "who is in I right now" then closed
+        # early and decided alone. Seen as three interrupt calls, and three LLM
+        # round trips, for one message. Announcing first is exact rather than
+        # timing-dependent, and it names only the members this delivery will
+        # actually interrupt -- a member in R is skipped here as it is below, so
+        # the barrier does not wait for one that was never stopped.
+        self._announce_interrupts(message_record, recipient_ids)
+
         for recipient_id in recipient_ids:
             recipient = self.agents.get(recipient_id)
             if recipient is None:

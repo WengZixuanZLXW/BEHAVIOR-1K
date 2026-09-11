@@ -501,6 +501,49 @@ def main() -> int:
     )[-1]["content"]
     ok("plan and interrupt prompts both carry the objective, and omit it when unset")
 
+    print("test 15: one message to a team is one interrupt decision, not one per member")
+    # The broker interrupts a team's members one at a time, so the first
+    # member's thread can be inside handle_interrupt before the last is in I.
+    # A barrier that inferred its set from "who is in I right now" closed early
+    # and each member then decided alone: three interrupt calls, and three LLM
+    # round trips, for one message. Driven through the real broker here,
+    # because the announcement is the broker's half of the fix.
+    from coop2.cognitive.messages import MessageBroker
+
+    client, agents, ids = make_team(4, name="bravo")
+    for name in ids:
+        agents[name].plan = None
+        agents[name]._set_state(AgentState.W, timestamp=0.0, env_step=0)
+    broker = MessageBroker(agents)
+    broker.teams = {"bravo": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    # Every member is in W, so the delivery stops all four.
+    broker.send_team_message(
+        sender_team="outsider", recipients=["bravo"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    brain = agents[ids[0]].brain
+    assert brain._expected_interrupt == set(ids), (
+        f"the broker announced {brain._expected_interrupt}, not the four it stopped"
+    )
+    assert all(agents[n].state is AgentState.I for n in ids)
+
+    threads = [threading.Thread(target=agents[n].handle_interrupt) for n in ids]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert not any(t.is_alive() for t in threads), "the barrier never closed"
+    assert time.monotonic() - started < 2.0, "it waited on a timeout"
+    assert client.interrupt_calls == 1, (
+        f"{client.interrupt_calls} interrupt calls for one message"
+    )
+    ok("four members, one announcement, one decision call")
+
     print("\nALL TESTS PASSED")
     return 0
 
