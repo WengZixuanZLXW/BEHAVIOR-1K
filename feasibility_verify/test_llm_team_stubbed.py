@@ -908,6 +908,53 @@ def main() -> int:
     assert agents[ids[0]].brain._expected_interrupt == set(ids)
     ok("all four stopped, and the barrier knows to wait for four")
 
+    print("test 24: a slow decision is still made once, not once per member")
+    # Test 15 asserts one call per message and passed throughout, because the
+    # stub answers instantly: the closer publishes before anyone else polls.
+    # A real call takes seconds, and in that window every blocked member's
+    # 50 ms poll saw an empty outstanding set -- "everyone arrived" read as
+    # "nobody is deciding" -- and made the call too. Measured on
+    # centralized_agents12_..._043310: four CLOSES lines per message, 16
+    # interrupt calls for 3 requests. So the stub has to be slow to test this.
+    class Slow(StubClient):
+        def generate_team_interrupt_decision(self, messages, temperature=0.7):
+            time.sleep(0.4)
+            return super().generate_team_interrupt_decision(messages, temperature)
+
+    client = Slow()
+    agents = create_llm_team_topology(
+        llm_client=client, teams={"hotel": [f"agent_{i}" for i in range(4)]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    ids = [f"agent_{i}" for i in range(4)]
+    for name in ids:
+        agents[name].symbolic_view = f"view for {name}"
+        agents[name].observe({}, 0)
+        agents[name].plan = None
+        agents[name]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    broker = MessageBroker(agents)
+    broker.teams = {"hotel": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+    broker.send_team_message(
+        sender_team="outsider", recipients=["hotel"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    assert all(agents[n].state is AgentState.I for n in ids)
+
+    threads = [threading.Thread(target=agents[n].handle_interrupt) for n in ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=15.0)
+    assert not any(t.is_alive() for t in threads), "the barrier never released"
+    assert client.interrupt_calls == 1, (
+        f"{client.interrupt_calls} calls for one message -- every member that "
+        "polled while the closer was still in the model made the call too"
+    )
+    ok("four members, a four-tenths-of-a-second call, exactly one of them makes it")
+
     print("\nALL TESTS PASSED")
     return 0
 

@@ -210,6 +210,14 @@ class TeamBrain:
         # interrupts any of them. Empty means "no announcement", and the barrier
         # falls back to the whole team.
         self._expected_interrupt: set = set()
+        # Whether a member has already claimed this round's decision. Without
+        # it, "the barrier is closed" and "the call is under way" are the same
+        # observation: the closer's model call takes seconds and only sets
+        # `_decided` afterwards, so every other member's 50 ms poll saw an empty
+        # outstanding set and made the call too. Measured on
+        # centralized_agents12_..._043310 -- four CLOSES lines per message, and
+        # 16 interrupt calls for 3 requests.
+        self._deciding = False
         #: Plans produced by the last team call, drained by their owners.
         self._pending_plans: Dict[str, SymbolicPlan] = {}
         #: Members that have been told they may hold this round and have not yet
@@ -713,7 +721,7 @@ class TeamBrain:
             # member assumed "a message interrupts every member at once", and
             # the broker interrupts an agent in W or X and skips one in R --
             # which is where the member running the team's planning call sits.
-            closing = not self._outstanding()
+            closing = self._claim_decision()
         if closing:
             return self._decide_and_publish(agent_id, messages)
 
@@ -731,12 +739,22 @@ class TeamBrain:
             # the broker's confirmation narrowed the set. Re-check rather than
             # hold the world until the deadline.
             with self._barrier_lock:
-                closing = not self._outstanding()
+                closing = self._claim_decision()
             if closing:
                 return self._decide_and_publish(agent_id, messages)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
               f"to be interrupted and it never completed; resuming")
         return None
+
+    def _claim_decision(self) -> bool:
+        """May this member make the call? True for exactly one per round.
+
+        Callers must hold ``_barrier_lock``.
+        """
+        if self._deciding or self._outstanding():
+            return False
+        self._deciding = True
+        return True
 
     def _decide_and_publish(self, agent_id: str, messages: List[Dict]) -> Optional[Any]:
         """One model call for the whole team, then hand out the answers.
@@ -752,6 +770,7 @@ class TeamBrain:
         decisions = self._decide_interrupts(messages)
         with self._barrier_lock:
             self._pending_decisions = decisions
+            self._deciding = False
             self.timeline.append(
                 {"kind": "deciding", "start": started, "end": time.time()}
             )
@@ -769,6 +788,7 @@ class TeamBrain:
         """
         with self._barrier_lock:
             self._expected_interrupt = set(names)
+            self._deciding = False
             self._interrupted.clear()
             self._pending_decisions = {}
             self._decided.clear()
