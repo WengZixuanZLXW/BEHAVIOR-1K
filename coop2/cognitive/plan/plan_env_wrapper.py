@@ -321,8 +321,17 @@ class PlanningEnvWrapper:
             current = self.logger.current_plans.get(agent_id)
             if current is plan:
                 continue
-            if current is not None and current.status.value in {"pending", "executing"}:
-                self.logger.log_plan_interrupted(current, self._current_step, "Replanned")
+            if current is not None:
+                # Two ways a plan can be standing here, and both leave a
+                # primitive in flight that the new plan has to wait out.
+                if current.status.value in {"pending", "executing"}:
+                    self.logger.log_plan_interrupted(current, self._current_step, "Replanned")
+                else:
+                    # Already terminal but never filed: the team recall ends a
+                    # hold by assigning the status. See log_plan_ended_elsewhere.
+                    self.logger.log_plan_ended_elsewhere(
+                        current, self._current_step, "Superseded by a new plan"
+                    )
                 self._reset_symbolic_action_state(agent_id)
             self.logger.log_plan_created(plan)
             self.coop2_trace.log(

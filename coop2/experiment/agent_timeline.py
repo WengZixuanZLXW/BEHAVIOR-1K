@@ -463,12 +463,21 @@ def _split_on_holds(span, ranges: List[Any]):
     return pieces
 
 
-def _holds(run_dir: str) -> Dict[str, List[Any]]:
-    """Per-agent env_step ranges spent holding for the team.
+def _holds(run_dir: str, end_step: Optional[int] = None) -> Dict[str, List[Any]]:
+    """Per-agent env_step ranges spent idling rather than working.
 
     Read from plan_logs.json, because agent_states.json cannot say: a hold and a
     real primitive are both state X, and only the plan's specification
     distinguishes them.
+
+    Two sources, because a hold is not always written down. The explicit ones
+    are the ``wait_for_team`` plans. The rest are the *gaps*: env_steps in which
+    an agent had no plan on record at all. A gap can only open while the world
+    is moving, and the world does not move while any agent is in R or W, so a
+    step-gap means this robot was standing in X with nothing to do -- which is
+    the same idling by another name. Reading them saves the figure from
+    depending on a hold having been filed, and lets it tell the truth about runs
+    recorded before it was.
     """
     path = os.path.join(run_dir, "plan_logs.json")
     if not os.path.exists(path):
@@ -480,17 +489,28 @@ def _holds(run_dir: str) -> Dict[str, List[Any]]:
         return {}
     plans = payload if isinstance(payload, list) else (payload.get("plan_history") or [])
     ranges: Dict[str, List[Any]] = {}
+    working: Dict[str, List[Tuple[int, int]]] = {}
     for plan in plans:
         if not isinstance(plan, dict):
-            continue
-        if not str(plan.get("specification", "")).startswith("wait_for_team"):
             continue
         start, end = plan.get("start_step"), plan.get("end_step")
         if start is None:
             continue
-        ranges.setdefault(str(plan.get("agent_id")), []).append(
-            (int(start), int(end if end is not None else start))
-        )
+        span = (int(start), int(end if end is not None else start))
+        agent_id = str(plan.get("agent_id"))
+        if str(plan.get("specification", "")).startswith("wait_for_team"):
+            ranges.setdefault(agent_id, []).append(span)
+        else:
+            working.setdefault(agent_id, []).append(span)
+
+    for agent_id, spans in working.items():
+        cursor = 0
+        for low, high in sorted(spans):
+            if low > cursor:
+                ranges.setdefault(agent_id, []).append((cursor, low))
+            cursor = max(cursor, high)
+        if end_step is not None and end_step > cursor:
+            ranges.setdefault(agent_id, []).append((cursor, int(end_step)))
     return ranges
 
 
@@ -603,14 +623,15 @@ def plot_from_run_dir(run_dir: str, filename: str = "agent_timeline.png") -> Opt
         return None
     with open(states_path) as handle:
         agent_states = json.load(handle)
+    end_step = _episode_end_step(run_dir)
     return plot_agent_state_timeline(
         agent_states,
         os.path.join(run_dir, filename),
         title=os.path.basename(run_dir),
-        end_step=_episode_end_step(run_dir),
+        end_step=end_step,
         messages=_messages(run_dir),
         teams=_teams(run_dir),
-        holds=_holds(run_dir),
+        holds=_holds(run_dir, end_step),
     )
 
 

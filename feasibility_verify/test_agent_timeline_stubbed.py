@@ -8,7 +8,8 @@ from __future__ import annotations
 import sys
 
 sys.path.insert(0, "/home/zixuanwe/Desktop/BEHAVIOR-1K")
-from coop2.experiment.agent_timeline import _merge_ranges, _split_on_holds
+import json, os, tempfile
+from coop2.experiment.agent_timeline import _holds, _merge_ranges, _split_on_holds
 
 
 def main() -> int:
@@ -57,6 +58,29 @@ def main() -> int:
     pieces = _split_on_holds((0.0, 100.0, "executing", 400, 1000), churn)
     assert [p[2] for p in pieces] == ["executing", "holding", "executing"]
     print("  ok: consecutive holds draw as one block, not eight")
+
+    print("\ntest: a step-gap with no plan on record counts as idling")
+    # agent_1 of centralized_agents12_..._045959: the team recall ended its
+    # holds by assigning the status, so only the last one was ever filed.
+    with tempfile.TemporaryDirectory() as run_dir:
+        with open(os.path.join(run_dir, "plan_logs.json"), "w") as handle:
+            json.dump({"plan_history": [
+                {"agent_id": "agent_1", "specification": "ontop(a, t)",
+                 "start_step": 0, "end_step": 986},
+                {"agent_id": "agent_1", "specification": "ontop(b, t)",
+                 "start_step": 2636, "end_step": 2840},
+                {"agent_id": "agent_1", "specification": "wait_for_team(team_0)",
+                 "start_step": 3492, "end_step": 4000},
+                # A teammate that worked to the end has no gap of its own.
+                {"agent_id": "agent_0", "specification": "ontop(c, t)",
+                 "start_step": 0, "end_step": 4000},
+            ]}, handle)
+        found = _holds(run_dir, end_step=4000)
+    # The trailing gap subsumes the one hold that was filed; merging is the
+    # plotter's job and it is what the split sees.
+    assert _merge_ranges(found["agent_1"], 0, 4000) == [(986, 2636), (2840, 4000)], found
+    assert "agent_0" not in found, found
+    print("  ok: unfiled holds are recovered from the gaps between plans")
 
     print("\nALL TESTS PASSED")
     return 0

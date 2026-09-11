@@ -283,6 +283,36 @@ class SymbolicPlanLogger:
         if plan.agent_id in self.current_plans:
             del self.current_plans[plan.agent_id]
     
+    def log_plan_ended_elsewhere(self, plan: SymbolicPlan, step: int, reason: str):
+        """Archive a plan that something else already marked terminal.
+
+        ``log_plan_completed`` and ``log_plan_interrupted`` both end a plan
+        *and* file it. The team recall does only the first half: it assigns
+        ``status = INTERRUPTED`` directly, because ``needs_new_plan()`` asks the
+        plan and a member left in R with a live one hangs the run. Nothing then
+        filed it, so the plan sat in ``current_plans`` until the replacement
+        overwrote it and vanished -- and the plans that end this way are
+        precisely the team holds, which is how a 1650-step wait for three
+        teammates came to be missing from plan_logs.json and drew on the
+        timeline as work.
+
+        ``complete_interrupted`` cannot be used to repair it here: it no-ops on
+        a plan that is already INTERRUPTED, so the end_step would stay None.
+        """
+        if plan.end_step is None:
+            plan.end_step = step
+        if not plan.failure_reason:
+            plan.failure_reason = reason
+        current = plan.get_current_action()
+        if current is not None and current.status in (None, "executing", "pending"):
+            current.status = "interrupted"
+            current.end_step = step
+            current.failure_reason = reason
+        self.plan_history.append(plan.to_dict())
+        print(f"\n[{plan.agent_id}] [INT] Plan #{plan.plan_id} ENDED at step {step} ({reason})")
+        if self.current_plans.get(plan.agent_id) is plan:
+            del self.current_plans[plan.agent_id]
+
     def get_all_plans(self) -> List[Dict]:
         """Get all plans including currently executing ones."""
         all_plans = self.plan_history.copy()
