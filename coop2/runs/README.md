@@ -14,6 +14,7 @@ Each contains:
 | `plan_logs.json` | one record per plan, with its actions and outcomes |
 | `agent_states.json`, `llm_usage.json`, `message_log.json` | FSM history, token/API accounting, inter-agent messages |
 | `llm_calls.jsonl` | **every LLM call: the prompt in, the completion out**, one JSON object per line, attributed to an agent and an env_step. The only record of what an agent was actually told -- the goal text reaches the run folder through nothing else. Flushed per call, so a killed run keeps the calls it had made; read it with `coop2.cognitive.agent.llm_io_log.read_llm_calls`, which skips a truncated final line. Budget ~35 kB per call. |
+| `llm_calls.log` | the same calls as a readable transcript, written alongside as the run goes: one block per call with the prompt and the completion, newlines printed rather than escaped. Regenerate for an older run with `python -m coop2.cognitive.agent.llm_io_log <run_dir>`. |
 | `agent_timeline.png` | per-agent FSM state (R/W/X/I) against wall clock, drawn from `agent_states.json` |
 
 `metrics_timeline.png` is no longer produced -- it plotted the COOP2 task

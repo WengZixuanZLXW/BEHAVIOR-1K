@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-__all__ = ["LLMIORecorder", "read_llm_calls"]
+__all__ = ["LLMIORecorder", "read_llm_calls", "render_call", "render_file"]
 
 
 def _jsonable(value: Any) -> Any:
@@ -54,6 +54,78 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+RULE = "=" * 100
+
+
+def _blocks(value: Any, indent: str = "  ") -> str:
+    """Readable text for a completion, with real newlines instead of ``\\n``.
+
+    ``json.dumps`` is the wrong tool for reading a completion: a plan's
+    reasoning is prose, and escaped into one line it is unreadable, which is the
+    whole complaint this function answers. Structure is shown by indentation and
+    strings are printed as they were written.
+    """
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            rendered = _blocks(item, indent + "  ")
+            if "\n" in rendered:
+                lines.append(f"{indent}{key}:")
+                lines.append(rendered)
+            else:
+                lines.append(f"{indent}{key}: {rendered.strip()}")
+        return "\n".join(lines)
+    if isinstance(value, list):
+        if not value:
+            return f"{indent}(empty)"
+        lines = []
+        for position, item in enumerate(value, start=1):
+            rendered = _blocks(item, indent + "  ")
+            if "\n" in rendered:
+                lines.append(f"{indent}[{position}]")
+                lines.append(rendered)
+            else:
+                lines.append(f"{indent}[{position}] {rendered.strip()}")
+        return "\n".join(lines)
+    text = "" if value is None else str(value)
+    if "\n" not in text:
+        return f"{indent}{text}"
+    return "\n".join(f"{indent}{line}" for line in text.split("\n"))
+
+
+def render_call(record: Dict[str, Any]) -> str:
+    """One call as a transcript: header, each prompt message, the completion."""
+    usage = record.get("usage") or {}
+    head = (
+        f"{RULE}\n"
+        f"#{record.get('seq')}  {record.get('agent_id')}  "
+        f"env_step {record.get('env_step')}  t={record.get('wall_clock')}s  "
+        f"{record.get('label')}\n"
+        f"  usage: {usage.get('total_tokens', '?')} tokens "
+        f"(prompt {usage.get('prompt_tokens', '?')}, "
+        f"completion {usage.get('completion_tokens', '?')})"
+    )
+    parts = [head]
+    for message in record.get("messages") or []:
+        role = str(message.get("role", "?")).upper()
+        parts.append(f"{'-' * 34} PROMPT / {role} {'-' * 34}")
+        parts.append(str(message.get("content", "")))
+    parts.append(f"{'-' * 38} COMPLETION {'-' * 38}")
+    parts.append(_blocks(record.get("response")))
+    return "\n".join(parts) + "\n"
+
+
+def render_file(jsonl_path: str, out_path: Optional[str] = None) -> Optional[str]:
+    """Render a whole llm_calls.jsonl to a readable transcript."""
+    if not os.path.exists(jsonl_path):
+        return None
+    out_path = out_path or os.path.splitext(jsonl_path)[0] + ".log"
+    with open(out_path, "w", encoding="utf-8") as handle:
+        for record in read_llm_calls(jsonl_path):
+            handle.write(render_call(record))
+    return out_path
+
+
 class LLMIORecorder:
     """Append one JSON object per LLM call. Shared by every agent in a run.
 
@@ -62,8 +134,16 @@ class LLMIORecorder:
     order the calls were issued in.
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, transcript: bool = True) -> None:
         self.path = path
+        # The readable twin, written alongside as the run goes. Two files rather
+        # than one because they answer different questions: the .jsonl is what a
+        # script reads back, the .log is what a person opens. Rendering on
+        # demand instead would leave a killed run with only the unreadable half,
+        # and the interrupted runs are exactly the ones worth reading.
+        self.transcript_path = (
+            os.path.splitext(path)[0] + ".log" if transcript else None
+        )
         self._lock = threading.Lock()
         self._sequence = 0
         self._started = time.time()
@@ -100,6 +180,10 @@ class LLMIORecorder:
                 with open(self.path, "a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
                     handle.flush()
+                if self.transcript_path:
+                    with open(self.transcript_path, "a", encoding="utf-8") as handle:
+                        handle.write(render_call(record))
+                        handle.flush()
         except Exception as error:  # noqa: BLE001
             # Say so once, then stay quiet rather than one line per call.
             self._failed = True
@@ -123,3 +207,16 @@ def read_llm_calls(path: str):
                 yield json.loads(line)
             except ValueError:
                 continue
+
+
+if __name__ == "__main__":
+    # Render the transcript for runs recorded before it was written alongside.
+    #     python -m coop2.cognitive.agent.llm_io_log coop2/runs/<run>/ ...
+    import sys
+
+    for argument in sys.argv[1:]:
+        path = argument
+        if os.path.isdir(path):
+            path = os.path.join(path, "llm_calls.jsonl")
+        written = render_file(path)
+        print(f"{argument}: {written or 'no llm_calls.jsonl'}")

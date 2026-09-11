@@ -227,6 +227,35 @@ class TeamBrain:
                 seen.add(key)
                 self._heard.append(message)
 
+    def _file_heard(self, messages: List[Dict]) -> None:
+        """Record messages already taken off a member's inbox.
+
+        ``handle_interrupt`` drains the inbox before the brain sees it, so
+        without this an interrupting message informed the resume/replan call and
+        then vanished -- it never reached ``_heard``, so it never reached the
+        next planning prompt and ``_was_asked`` never saw it.
+
+        That is not a cosmetic loss. A centralized leader's request interrupts
+        by design, so from the second round on the follower team was answering a
+        question it no longer held: measured on
+        ``centralized_agents8_..._235226``, team_1 replied to the round-1 request
+        (it was still in R, which the broker does not interrupt) and to neither
+        of the two after it.
+
+        Callers must hold ``_lock``.
+        """
+        seen = {
+            (m.get("sender"), m.get("timestamp"), str(m.get("content")))
+            for m in self._heard
+        }
+        for message in messages or []:
+            key = (message.get("sender"), message.get("timestamp"),
+                   str(message.get("content")))
+            if key in seen:
+                continue
+            seen.add(key)
+            self._heard.append(message)
+
     def _heard_block(self) -> str:
         if not self._heard:
             return ""
@@ -357,8 +386,20 @@ class TeamBrain:
             # to have spoken before it plans, and whatever it tells other teams
             # follows from the plan it just made.
             started = time.time()
+            # Twice, and both are load-bearing. Before, because a hook reads
+            # what has already arrived -- FollowerTeamBrain._was_asked is a
+            # query against _heard. After, because the hooks *wait*: the chain
+            # blocks in _await_speakers for the team ahead of it and the leader
+            # blocks for its followers' replies, and collecting only beforehand
+            # built the prompt from a snapshot taken before the very message the
+            # team had just waited for. Measured: team_1 waited for team_0,
+            # received its allocation, and planned without it -- then quoted it
+            # one round later, at env_step 3741, by which time it was stale.
+            # _collect_heard is idempotent, so the second call is free when the
+            # first already took everything.
             self._collect_heard()
             self.before_plan()
+            self._collect_heard()
             self._pending_plans = self._generate_team_plans()
             self.rounds += 1
             self.after_plan()
@@ -540,6 +581,10 @@ class TeamBrain:
         to advance in the meantime.
         """
         with self._lock:
+            # File first, unconditionally: these came off the member's inbox and
+            # this is their only remaining route into the team's record.
+            self._file_heard(messages)
+
             if agent_id in self._pending_decisions:
                 self._interrupted.discard(agent_id)
                 return self._pending_decisions.pop(agent_id)

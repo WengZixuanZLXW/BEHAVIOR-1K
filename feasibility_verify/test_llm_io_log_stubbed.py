@@ -19,7 +19,9 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from coop2.cognitive.agent.llm_io_log import LLMIORecorder, read_llm_calls
+from coop2.cognitive.agent.llm_io_log import (
+    LLMIORecorder, read_llm_calls, render_call, render_file,
+)
 
 
 def ok(message: str) -> None:
@@ -131,6 +133,47 @@ def main() -> int:
     print("\ntest: reading a run that never wrote one yields nothing, not an error")
     assert list(read_llm_calls(os.path.join(directory, "absent.jsonl"))) == []
     ok("a missing log reads as empty")
+
+    print("\ntest: the transcript shows newlines instead of escaping them")
+    # The complaint this answers: json.dumps turns a plan's prose into one
+    # unreadable line of \\n.
+    record = {
+        "seq": 7, "agent_id": "agent_4", "env_step": 3741, "wall_clock": 639.2,
+        "label": "Team Plan Generation [team_1]",
+        "usage": {"total_tokens": 12043, "prompt_tokens": 11800, "completion_tokens": 243},
+        "messages": [{"role": "user", "content": "line one\nline two"}],
+        "response": {"allocation": "first thought\nsecond thought",
+                     "plans": [{"agent_id": "agent_4", "actions": ["navigate_to"]}]},
+    }
+    text = render_call(record)
+    assert "\\n" not in text, "a newline was escaped rather than printed"
+    assert "line one\nline two" in text, "the prompt must keep its own line breaks"
+    assert "first thought\n" in text and "second thought" in text
+    assert "Team Plan Generation [team_1]" in text and "env_step 3741" in text
+    assert "12043 tokens" in text
+    assert "PROMPT / USER" in text and "COMPLETION" in text
+    assert "agent_id: agent_4" in text, "nested structure survives as indented keys"
+    ok("prose reads as prose, structure reads as indentation")
+
+    print("\ntest: the recorder writes the transcript alongside, as it goes")
+    pair_dir = tempfile.mkdtemp(prefix="llm_io_pair_")
+    live = LLMIORecorder(os.path.join(pair_dir, "llm_calls.jsonl"))
+    live.record(agent_id="agent_0", env_step=0, label="Team Plan Generation [team_0]",
+                messages=[{"role": "user", "content": "a\nb"}],
+                response="done", usage={"total_tokens": 5})
+    assert os.path.exists(live.transcript_path), "no transcript was written"
+    written = open(live.transcript_path, encoding="utf-8").read()
+    assert "a\nb" in written and "done" in written
+    # It is a twin, not a replacement: the machine-readable half is still there.
+    assert len(list(read_llm_calls(live.path))) == 1
+    ok("both halves land, and the .log is readable while the run is still going")
+
+    print("\ntest: an old run can be rendered after the fact")
+    rendered = render_file(path)
+    assert rendered and rendered.endswith(".log")
+    assert os.path.getsize(rendered) > 0
+    assert render_file(os.path.join(directory, "absent.jsonl")) is None
+    ok("render_file turns a recorded run into a transcript, and skips a missing one")
 
     print("\nALL TESTS PASSED")
     return 0
