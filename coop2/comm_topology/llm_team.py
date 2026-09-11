@@ -104,7 +104,25 @@ per robot, in that same call.
 #: Ticks a member holds for while it waits for the rest of the team. Short
 #: relative to a navigate (~100 ticks of settle plus 60/m) so the team regroups
 #: soon after the last member lands, rather than overshooting by a long wait.
-TEAM_HOLD_TICKS = 60
+TEAM_HOLD_TICKS = 600
+
+#: How many `wait` actions one hold plan carries.
+#:
+#: A hold must be ended by the team's recall, never by running out. The FSM
+#: leaves an agent in X while a plan advances through its actions and only sends
+#: it to R when the plan *completes* (`plan_env_wrapper`: `is_complete()` ->
+#: `set_unready('plan_terminated')`). A one-action hold therefore completed every
+#: 60 ticks and cycled the member X -> R -> W -> X to ask for a plan it was never
+#: going to get: agent_5 in centralized_agents8_..._040159 logged dozens of
+#: reasoning/waiting pairs at one env_step, and agent_2 in the next run recorded
+#: 33 separate hold plans covering 2026 of 2500 steps.
+#:
+#: With many actions the plan stays EXECUTING and the member stays in X for the
+#: whole wait, asking once. 600 x 64 is ~38 000 ticks, past any episode this
+#: task is run at, so exhaustion is a backstop and not the mechanism --
+#: `_recall_holders` marks the plan terminal the moment the barrier closes and
+#: the wrapper aborts the wait in flight, so a long hold costs no extra latency.
+TEAM_HOLD_ACTIONS = 64
 
 #: How long a member blocks in I waiting for its teammates to be interrupted
 #: too. Generous because it should never be reached: the broker interrupts every
@@ -1258,7 +1276,8 @@ class LLMTeamAgent(BaseLLMAgent):
             # member is holding, and it may be spinning on this member reaching
             # W, so taking its lock here would have both wait on the other.
             if self.verbose:
-                print(f"  [{self.agent_id}] holding {TEAM_HOLD_TICKS} ticks for the team")
+                print(f"  [{self.agent_id}] holding for the team "
+                  f"({TEAM_HOLD_ACTIONS} x {TEAM_HOLD_TICKS} ticks, ended by the recall)")
             plan = self.build_hold_plan()
         self.plan = plan
         return self.plan
@@ -1290,7 +1309,13 @@ class LLMTeamAgent(BaseLLMAgent):
         """
         return SymbolicPlan(
             specification=f"wait_for_team({self.brain.team_name})",
-            actions=[SymbolicAction(action_type="wait", args={"ticks": TEAM_HOLD_TICKS})],
+            # Many, not one: a plan that completes sends its agent back to R,
+            # and a holding member has nothing to reason about. See
+            # TEAM_HOLD_ACTIONS.
+            actions=[
+                SymbolicAction(action_type="wait", args={"ticks": TEAM_HOLD_TICKS})
+                for _ in range(TEAM_HOLD_ACTIONS)
+            ],
             plan_id=self.plan_count + 1,
             agent_id=self.agent_id,
             created_at_step=self.env_step,

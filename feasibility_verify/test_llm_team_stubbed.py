@@ -34,7 +34,11 @@ from coop2.cognitive.agent.llm_client import (
     TeamAgentPlan,
 )
 from coop2.cognitive.action.action import SymbolicAction
-from coop2.comm_topology.llm_team import TEAM_HOLD_TICKS, create_llm_team_topology
+from coop2.comm_topology.llm_team import (
+    TEAM_HOLD_ACTIONS,
+    TEAM_HOLD_TICKS,
+    create_llm_team_topology,
+)
 
 
 def ok(message: str) -> None:
@@ -139,11 +143,22 @@ def main() -> int:
         assert plan is not None, f"{name} has no plan at all -- it would never become ready"
         assert plan.actions[0].action_type == "wait", plan.actions[0].action_type
         assert plan.actions[0].args["ticks"] == TEAM_HOLD_TICKS
-        # Exactly one action. A hold that goes through parse_plan_response picks
-        # up a terminal action derived from its TaskSpecification -- expressed as
-        # holding(<self>) that appended grasp(<self>), a robot planning to pick
-        # itself up, which reached a real run before it was caught.
-        assert len(plan.actions) == 1, [a.action_type for a in plan.actions]
+        # Every action a wait, and nothing else. A hold that goes through
+        # parse_plan_response picks up a terminal action derived from its
+        # TaskSpecification -- expressed as holding(<self>) that appended
+        # grasp(<self>), a robot planning to pick itself up, which reached a
+        # real run before it was caught.
+        kinds = {a.action_type for a in plan.actions}
+        assert kinds == {"wait"}, sorted(kinds)
+        # And many of them: a plan that completes sends its agent back to R, so
+        # a one-action hold cycled X -> R -> W -> X every 60 ticks to ask for a
+        # plan it was never going to get. The recall ends a hold, not expiry.
+        assert len(plan.actions) == TEAM_HOLD_ACTIONS, len(plan.actions)
+        plan.advance_action()
+        assert not plan.is_complete(), (
+            "one action in and the hold is already complete -- the member will "
+            "be sent back to reasoning"
+        )
     ok("3 of 4 finished -> no LLM call, and each early finisher holds rather than stalling")
 
     print("test 2: the last member closes the barrier and everyone gets a real plan")
@@ -237,10 +252,11 @@ def main() -> int:
     # A member with no plan never becomes ready, which would strand the whole
     # run at the next barrier -- so the brain gives it a hold instead.
     assert agents[ids[1]].plan is not None
-    assert agents[ids[1]].plan.actions[0].action_type == "wait"
-    assert len(agents[ids[1]].plan.actions) == 1, [
-        a.action_type for a in agents[ids[1]].plan.actions
-    ]
+    skipped = agents[ids[1]].plan
+    assert {a.action_type for a in skipped.actions} == {"wait"}, (
+        sorted({a.action_type for a in skipped.actions})
+    )
+    assert len(skipped.actions) == TEAM_HOLD_ACTIONS, len(skipped.actions)
     ok("a skipped robot gets a hold, so it still becomes ready")
 
     print("test 7: an LLM failure falls back rather than ending the run")
