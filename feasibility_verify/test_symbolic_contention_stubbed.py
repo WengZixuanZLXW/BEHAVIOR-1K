@@ -23,6 +23,7 @@ import importlib.util
 import math
 import os
 import random
+import re
 import sys
 import types
 
@@ -556,6 +557,27 @@ def main() -> int:
     assert is_definitely_grasping("yes") is False, "an unreadable answer must not create a claim"
     ok("only IsGraspingState.TRUE counts as holding")
 
+    print("test: the prompts quote the travel charge the engine actually applies")
+    # Two prose copies of a number the code owns. When the charge halved to 30
+    # both descriptions still said 60, so every plan was costed against a world
+    # twice as expensive as the one it ran in -- and nothing failed, because
+    # prose cannot disagree with code loudly. This is the disagreement, made
+    # loud. prompts.py keeps the literal on purpose: importing the constant
+    # would drag OmniGibson into every module that builds a prompt -- and this
+    # file stubs OmniGibson out, so it reads the source rather than importing
+    # it, which also keeps the stub isolation intact.
+    from coop2.behavior_env.symbolic_contention import DEFAULT_TRAVEL_TICKS_PER_METER
+
+    charge = int(DEFAULT_TRAVEL_TICKS_PER_METER)
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "coop2/cognitive/agent/prompts.py")) as handle:
+        prompt_source = handle.read()
+    quoted = re.findall(r"(\d+) ticks per metre", prompt_source)
+    assert len(quoted) == 2, f"expected both descriptions to state it, found {quoted}"
+    assert all(int(value) == charge for value in quoted), (
+        f"the prompts say {quoted} ticks per metre; the engine charges {charge}"
+    )
+    ok(f"both descriptions say {charge} ticks per metre, as the engine does")
 
     print("\nALL TESTS PASSED")
     return 0

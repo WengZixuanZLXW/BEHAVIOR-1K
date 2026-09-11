@@ -235,7 +235,7 @@ class BehaviorWorldState:
 
         The reverse of entity_id_for, for error text. A primitive raises with
         the *scene* name, because that is all the controller has, and the agent
-        has never seen it -- it is told to use only the ids from "You can do:"
+        has never seen it -- it is told to use only the ids in the room listing
         and never to invent one. An outcome that says "Cannot reach apple_48"
         is therefore unusable: the agent cannot tell which of its targets
         failed, or even that the name refers to something it knows.

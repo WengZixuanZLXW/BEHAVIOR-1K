@@ -33,7 +33,7 @@ def ok(message: str) -> None:
 #: Rules the world imposes whoever is being told about them. They are worded
 #: differently in the two descriptions (one speaks to a robot, the other about
 #: robots), so only the load-bearing token is matched.
-SHARED_RULES = ("TOO_FAR", "unreachable", "held by", "You can do:",
+SHARED_RULES = ("TOO_FAR", "unreachable", "held by", "room listing",
                 "ticks per metre", "navigate_to", "wait")
 
 

@@ -1374,22 +1374,20 @@ def _read_view_header(view: Optional[str]) -> Tuple[str, str]:
 def _first_useful_target(view: Optional[str]) -> str:
     """One target worth naming: something in range, else the closest thing.
 
-    Entries under ``You can do:`` read
-    ``apple.n.01_2: unreachable, navigate_to   [11.6 m away]`` when out of
-    range and carry no distance when the robot can already act on them, which
-    is exactly the distinction the leader wants reported.
+    A room-listing line reads
+    ``  - apple.n.01_2  -> unreachable, navigate_to  [11.6 m away]`` when out of
+    range and carries no distance when the robot can already act on it, which is
+    exactly the distinction the leader wants reported. Only objects have the
+    ``->``: target_hints skips robots, so teammates cannot be reported as
+    targets.
     """
-    lines = (view or "").split("\n")
-    try:
-        start = next(i for i, line in enumerate(lines) if line.startswith("You can do:"))
-    except StopIteration:
-        return ""
     nearest, nearest_distance = "", float("inf")
-    for line in lines[start + 1:]:
-        if not line.startswith("  ") or ":" not in line:
-            break
-        name = line.strip().split(":", 1)[0]
-        distance = re.search(r"\[([\d.]+) m away\]", line)
+    for line in (view or "").split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("- ") or "->" not in stripped:
+            continue
+        name = stripped[2:].split("->", 1)[0].strip().split("  ")[0]
+        distance = re.search(r"\[([\d.]+) m away\]", stripped)
         if distance is None:
             return f"{name} (in range)"
         value = float(distance.group(1))

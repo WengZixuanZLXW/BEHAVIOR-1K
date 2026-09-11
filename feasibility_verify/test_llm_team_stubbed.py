@@ -637,17 +637,18 @@ def main() -> int:
     view = (
         "Step 0/2500 | you are agent_4 in empty_room_0 (a empty room)\n"
         "Holding: apple.n.01_2\n"
-        "\nYou can do:\n"
-        "  apple.n.01_1: unreachable, navigate_to   [36.7 m away]\n"
-        "  coffee_table.n.01_1: place_on_top, navigate_to\n"
+        "\nempty_room_0:\n"
+        "  - agent_5  (teammate)\n"
+        "  - apple.n.01_1  -> unreachable, navigate_to  [36.7 m away]\n"
+        "  - coffee_table.n.01_1  -> place_on_top, navigate_to\n"
     )
     assert _read_view_header(view) == ("empty_room_0", "apple.n.01_2")
     assert _first_useful_target(view) == "coffee_table.n.01_1 (in range)", (
         "an object it can act on now must win over a nearer unreachable one"
     )
     # Out of range everywhere: report the closest, with its distance.
-    far = view.replace("  coffee_table.n.01_1: place_on_top, navigate_to\n",
-                       "  coffee_table.n.01_1: unreachable, navigate_to   [11.6 m away]\n")
+    far = view.replace("  - coffee_table.n.01_1  -> place_on_top, navigate_to\n",
+                       "  - coffee_table.n.01_1  -> unreachable, navigate_to  [11.6 m away]\n")
     assert _first_useful_target(far) == "coffee_table.n.01_1 (12 m away)"
     assert _read_view_header(None) == ("", "") and _first_useful_target(None) == ""
 
@@ -771,7 +772,8 @@ def main() -> int:
     for agent in agents.values():
         agent.symbolic_view = (
             f"Step 0/2500 | you are {agent.agent_id} in empty_room_0 (a empty room)\n"
-            "Holding: nothing\n\nYou can do:\n  apple.n.01_1: grasp, navigate_to\n"
+            "Holding: nothing\n\nempty_room_0:\n"
+            "  - apple.n.01_1  -> grasp, navigate_to\n"
         )
         agent.observe({}, 0)
         agent.plan = None

@@ -24,16 +24,16 @@ from ..coop2_messages import (
 ENV_DESCRIPTION = """You are one of several robots working together in a house.
 
 You act through high-level primitives, not joint commands. Each one takes many
-simulation steps: driving across a room costs roughly 60 ticks per metre, so
+simulation steps: driving across a room costs roughly 30 ticks per metre, so
 distance is the main cost you control. You cannot see -- you are given a
 symbolic description of the room you are standing in, and only that room.
 
 Rules that decide whether an action succeeds:
 - To grasp, place, open or toggle an object you must be closer to it than that
   object's own distance threshold; beyond it the action fails with TOO_FAR.
-  Under "You can do:" a distance in metres is shown ONLY for objects that are
-  currently out of range -- no distance means you are already close enough to
-  act on it now.
+  Each object in the room listing carries what you can do to it after "->",
+  and a distance in metres ONLY when it is out of range -- no distance means
+  you are already close enough to act on it now.
 - An out-of-range object is marked "unreachable" and offers navigate_to and
   NOTHING else. You cannot grasp, place, open or toggle an unreachable object,
   however close it looks in the room listing: you must navigate_to it first.
@@ -45,9 +45,9 @@ Rules that decide whether an action succeeds:
 - Objects are exclusive. If a teammate is holding something, your grasp fails
   with "held by <agent>". Going after a target a teammate already has costs you
   the whole trip for nothing.
-- Refer to objects only by the ids listed under "You can do:", which are the
-  objects in the room you are standing in. They look like apple.n.01_1. Never
-  invent or guess one. An entry marked "blocked" is in that room but currently
+- Refer to objects only by the ids in the room listing, which are the objects
+  in the room you are standing in. They look like apple.n.01_1. Never invent or
+  guess one. An entry marked "blocked" is in that room but currently
   unavailable -- the bracketed note says why.
 
 When an action fails, your plan is abandoned and you are asked to think again.
@@ -64,7 +64,7 @@ approach, or pick a different target."""
 TEAM_ENV_DESCRIPTION = """You command a team of robots in a house, alongside other teams doing the same.
 
 Your robots act through high-level primitives, not joint commands. Each one
-takes many simulation steps: driving across a room costs 60 ticks per metre, so
+takes many simulation steps: driving across a room costs 30 ticks per metre, so
 distance is the main cost you control. None of them can see -- each is given a
 symbolic description of the room it is standing in, and only that room, and
 those descriptions are listed below one robot at a time.
@@ -72,9 +72,9 @@ those descriptions are listed below one robot at a time.
 Rules that decide whether an action succeeds:
 - To grasp, place, open or toggle an object a robot must be closer to it than
   that object's own distance threshold; beyond it the action fails with TOO_FAR.
-  Under a robot's "You can do:" a distance in metres is shown ONLY for objects
-  that are currently out of range -- no distance means that robot is already
-  close enough to act on it now.
+  Each object in a robot's room listing carries what that robot can do to it
+  after "->", and a distance in metres ONLY when it is out of range -- no
+  distance means that robot is already close enough to act on it now.
 - An out-of-range object is marked "unreachable" and offers navigate_to and
   NOTHING else. No robot can grasp, place, open or toggle an unreachable
   object, however close it looks in the room listing: it must navigate_to it
@@ -88,10 +88,10 @@ Rules that decide whether an action succeeds:
 - Objects are exclusive, including between your own robots. If anyone is
   holding something, a grasp for it fails with "held by <agent>". Sending two
   robots after one target costs the loser the whole trip for nothing.
-- Refer to objects only by the ids listed under that robot's own "You can do:",
-  which are the objects in the room it is standing in. They look like
-  apple.n.01_1. Never invent one, and never give one robot an id that appeared
-  only under another robot -- it is in a room that robot cannot see.
+- Refer to objects only by the ids in that robot's own room listing, which are
+  the objects in the room it is standing in. They look like apple.n.01_1. Never
+  invent one, and never give one robot an id that appeared only under another
+  robot -- it is in a room that robot cannot see.
 - An entry marked "blocked" is in that room but currently unavailable -- the
   bracketed note says why.
 
@@ -650,13 +650,14 @@ def build_observation_prompt(
         parts.append(format_visible_area(visible_area))
         parts.append("")
     
-    # Symbolic view (detailed view with entity IDs). Its own tail is the action
-    # catalogue under "You can do:", built from the same target_hints() call the
-    # env renders into info["target_hints"] -- so appending both put every id in
-    # the room twice, and each out-of-range one four times (a navigate_to line
-    # and an unreachable line, both repeating the distance). The grouped form is
-    # the one ENV_DESCRIPTION tells the agent to read ids from, so it wins; the
-    # flat form stays as the fallback for a caller that has hints but no view.
+    # Symbolic view (detailed view with entity IDs). It already carries the
+    # action catalogue -- the verbs sit on each object's own line -- built from
+    # the same target_hints() call the env renders into info["target_hints"], so
+    # appending both put every id in the room twice, and each out-of-range one
+    # four times (a navigate_to line and an unreachable line, both repeating the
+    # distance). The grouped form is the one ENV_DESCRIPTION tells the agent to
+    # read ids from, so it wins; the flat form stays as the fallback for a
+    # caller that has hints but no view.
     if symbolic_view:
         parts.append("SYMBOLIC VIEW:")
         parts.append(symbolic_view)
