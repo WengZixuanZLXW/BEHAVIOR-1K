@@ -510,8 +510,29 @@ class TeamBrain:
                 while member.state == AgentState.R and time.monotonic() < settle:
                     time.sleep(0.001)
                 self._committed.discard(name)
+            # Mark whatever plan it has, not only a hold. The recall is
+            # unconditional about *state* -- W and X are both pushed to R -- so
+            # it has to be unconditional about the plan too, or it leaves an
+            # agent in R holding a live plan. create_agent_thread then takes its
+            # silent `else: return`: R with needs_new_plan() false matches
+            # neither branch and never reaches set_ready, so the runner respawns
+            # a thread every 50 ms that dies at once and the episode stops
+            # advancing with no error and no traceback. That hung a run at
+            # env_step 1440, and the only thing that showed it was a SIGUSR1
+            # dump -- main thread in wait_for_state_change, not one agent thread
+            # alive.
+            #
+            # Safe because the team is about to issue a plan for every member:
+            # _generate_team_plans covers them all and claim_pending_plan hands
+            # each one out, so the plan marked here is superseded either way. A
+            # REPLAN handed down by an interrupt is exactly the live plan that
+            # used to fall through this gap.
             plan = member.plan
-            if plan is not None and str(plan.specification).startswith("wait_for_team"):
+            if plan is not None and plan.status not in (
+                SymbolicPlanStatus.SUCCESS,
+                SymbolicPlanStatus.FAILED,
+                SymbolicPlanStatus.INTERRUPTED,
+            ):
                 plan.status = SymbolicPlanStatus.INTERRUPTED
             # Both W and X. A member that finished its hold and is sitting ready
             # is idling just as much as one still running it, and skipping the W

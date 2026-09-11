@@ -33,6 +33,7 @@ from coop2.cognitive.agent.llm_client import (
     TeamAgentInterruptDecision,
     TeamAgentPlan,
 )
+from coop2.cognitive.action.action import SymbolicAction
 from coop2.comm_topology.llm_team import TEAM_HOLD_TICKS, create_llm_team_topology
 
 
@@ -803,6 +804,36 @@ def main() -> int:
                if (m.get("metadata") or {}).get("type") == "follower_response"]
     assert replies, "the follower never managed to answer"
     ok("the reply gets through and the leader plans with it")
+
+    print("test 21: a recalled member is never left in R holding a live plan")
+    # The recall is unconditional about state -- W and X both go to R -- but it
+    # only marked a plan terminal when that plan was a hold. A member holding a
+    # real plan (a REPLAN handed down by an interrupt, say) landed in R with it
+    # still EXECUTING, and create_agent_thread's silent `else: return` then
+    # matched neither branch and never called set_ready: the runner respawned a
+    # thread every 50 ms that died at once, and the episode stopped advancing
+    # with no error. It hung a run at env_step 1440.
+    from coop2.cognitive.plan.plan import SymbolicPlan, SymbolicPlanStatus
+
+    client, agents, ids = make_team(3, name="echo")
+    brain = agents[ids[0]].brain
+    # A real plan, mid-flight -- what an interrupt's REPLAN hands a member.
+    real = SymbolicPlan(
+        specification="ontop(apple.n.01_1, coffee_table.n.01_1)",
+        actions=[SymbolicAction(action_type="navigate_to", args={"target": "apple.n.01_1"})],
+        plan_id=7, agent_id=ids[1], created_at_step=0,
+    )
+    real.status = SymbolicPlanStatus.EXECUTING
+    agents[ids[1]].plan = real
+    agents[ids[1]]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    agents[ids[1]].ready = True
+
+    brain._recall_holders(except_id=ids[0])
+    assert agents[ids[1]].state is AgentState.R, "the recall should have pulled it into R"
+    assert agents[ids[1]].needs_new_plan(), (
+        "left in R with a live plan: create_agent_thread will do nothing forever"
+    )
+    ok("its plan is marked terminal, so the thread has a branch to take")
 
     print("\nALL TESTS PASSED")
     return 0
