@@ -297,10 +297,14 @@ def plot_agent_state_timeline(
         )
         absorbed_total += absorbed
         agent_holds = (holds or {}).get(agent_id) or []
-        for start, stop, state, first_step, last_step in spans:
-            if state == "executing" and _inside_hold(first_step, last_step, agent_holds):
-                # Same FSM state, a different thing entirely.
-                state = "holding"
+        # Holding is state X too, so the split happens here and not in the FSM:
+        # only the plan's specification separates a team hold from real work.
+        pieces = [
+            piece for span in spans for piece in _split_on_holds(span, agent_holds)
+        ]
+        pieces, sliver = _coalesce(pieces, min_width)
+        absorbed_total += sliver
+        for start, stop, state, first_step, last_step in pieces:
             axes.barh(
                 lane, stop - start, left=start, height=0.55,
                 color=(HOLDING_COLOUR if state == "holding"
@@ -398,12 +402,65 @@ def plot_agent_state_timeline(
     return output_path
 
 
-def _inside_hold(first_step: int, last_step: int, ranges: List[Any]) -> bool:
-    """Is this executing span one of the agent's `wait_for_team` holds?"""
-    for low, high in ranges:
-        if first_step >= low and last_step <= max(high, low):
-            return True
-    return False
+def _merge_ranges(ranges: List[Any], low: int, high: int) -> List[Tuple[int, int]]:
+    """The hold ranges clipped to ``[low, high]``, overlaps merged, sorted."""
+    clipped = []
+    for start, end in ranges:
+        start, end = int(start), int(max(end, start))
+        first, last = max(start, low), min(end, high)
+        if last > first:
+            clipped.append((first, last))
+    clipped.sort()
+    merged: List[Tuple[int, int]] = []
+    for first, last in clipped:
+        if merged and first <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], last))
+        else:
+            merged.append((first, last))
+    return merged
+
+
+def _split_on_holds(span, ranges: List[Any]):
+    """Cut an executing span where the agent was holding for its team.
+
+    A span is not one thing. `_coalesce` folds the sub-pixel R/W seams between
+    consecutive plans into their neighbour, so a single bar routinely covers a
+    real primitive *and* the `wait_for_team` that followed it -- and a bar is
+    only honest if the two are drawn in different colours. Asking whether the
+    whole bar sits inside a hold answers "no" for exactly those bars, which is
+    the ones worth splitting, so the question is where the boundaries fall
+    rather than which side of one the span is on.
+
+    env_step is the only clock both the span and the hold are written in, so
+    the split points come from interpolating time linearly across the span's
+    step range. That is exact while the env is stepping, which is what an
+    executing span is.
+    """
+    start, stop, state, first_step, last_step = span
+    if state != "executing" or not ranges:
+        return [span]
+    if last_step <= first_step:
+        # No range to interpolate over: it is one or the other, so ask which.
+        for low, high in ranges:
+            if low <= first_step <= max(high, low):
+                return [(start, stop, "holding", first_step, last_step)]
+        return [span]
+
+    merged = _merge_ranges(ranges, first_step, last_step)
+    if not merged:
+        return [span]
+    scale = (stop - start) / (last_step - first_step)
+    at = lambda step: start + (step - first_step) * scale
+
+    pieces, cursor = [], first_step
+    for low, high in merged:
+        if low > cursor:
+            pieces.append((at(cursor), at(low), "executing", cursor, low))
+        pieces.append((at(low), at(high), "holding", low, high))
+        cursor = high
+    if cursor < last_step:
+        pieces.append((at(cursor), at(last_step), "executing", cursor, last_step))
+    return pieces
 
 
 def _holds(run_dir: str) -> Dict[str, List[Any]]:
