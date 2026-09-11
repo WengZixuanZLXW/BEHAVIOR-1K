@@ -544,8 +544,12 @@ Use the `behavior` conda env (see the repo root `AGENTS.md`), and
 # cases: `pytest` collects nothing from them.
 for f in feasibility_verify/test_*.py; do python "$f"; done
 
-# The real thing: an LLM-driven episode against the BDDL activity.
-python -m coop2.experiment.run_individual --agents 2 --steps 4000 --seed 0 \
+# The real thing: an LLM-driven episode against the BDDL activity. Use `python
+# -u` whenever stdout is redirected to a file: Isaac's shutdown ends the process
+# without flushing, so the whole tail after the last simulator print is lost --
+# including "[goal] BDDL goal satisfied at env_step N" and the plan statistics.
+# A run that looks like it stopped early and said nothing is usually this.
+python -u -m coop2.experiment.run_individual --agents 2 --steps 4000 --seed 0 \
   --scene Pomaria_1_int --room living_room_0 \
   --bddl-activity coop_two_apples_pomaria \
   --goal "Put both apples on coffee_table.n.01_1." \
