@@ -59,6 +59,7 @@ code path.
 from __future__ import annotations
 
 import threading
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -108,6 +109,11 @@ TEAM_HOLD_TICKS = 60
 #: How long a member blocks in I waiting for its teammates to be interrupted
 #: too. Generous because it should never be reached: the broker interrupts every
 #: member of a team in the same call, so they arrive within milliseconds.
+#: Print every arrival at the interrupt barrier. For working out why a barrier
+#: closes more often than a message arrives -- which the logs alone could not
+#: answer.
+TEAM_VERBOSE = bool(os.environ.get("COOP2_TEAM_VERBOSE"))
+
 INTERRUPT_BARRIER_TIMEOUT = 30.0
 
 #: How long a leader waits for its followers' status reports before planning
@@ -668,6 +674,13 @@ class TeamBrain:
         self.on_interrupt(messages)
 
         with self._barrier_lock:
+            if TEAM_VERBOSE:
+                member = self.members.get(agent_id)
+                print(f"  [barrier {self.team_name}] {agent_id} arrives "
+                      f"state={getattr(getattr(member, 'state', None), 'value', '?')} "
+                      f"msgs={len(messages)} expected={sorted(self._expected_interrupt)} "
+                      f"arrived={sorted(self._interrupted)} "
+                      f"pending={sorted(self._pending_decisions)}")
             if agent_id in self._pending_decisions:
                 return self._pending_decisions.pop(agent_id)
             member = self.members.get(agent_id)
@@ -713,6 +726,10 @@ class TeamBrain:
         Called holding nothing: the call itself and the announcement that
         follows it both reach outside this team.
         """
+        if TEAM_VERBOSE:
+            print(f"  [barrier {self.team_name}] {agent_id} CLOSES and decides "
+                  f"(expected={sorted(self._expected_interrupt)} "
+                  f"arrived={sorted(self._interrupted)})")
         started = time.time()
         decisions = self._decide_interrupts(messages)
         with self._barrier_lock:
