@@ -67,6 +67,7 @@ TEAM_SPAN_COLOURS = {
     # draws.
     "interrupted": STATE_COLOURS["interrupted"],
     "deciding": STATE_COLOURS["interrupted"],
+    "waiting": STATE_COLOURS["waiting"],
 }
 TEAM_IDLE_COLOUR = "#e9ecef"
 
@@ -289,6 +290,19 @@ def plot_agent_state_timeline(
             axes.barh(lane, max(stop - start, min_width), left=start, height=0.34,
                       color=TEAM_SPAN_COLOURS.get(kind, "#cccccc"),
                       edgecolor="none", zorder=2)
+        # W, which the brain cannot record. It writes its own R and I -- it is
+        # the thing doing them -- but a team is in W once the plan is handed out
+        # and its robots have not started yet, and by then nothing calls the
+        # brain again. So it is read off the members, where it already is: the
+        # team is waiting while any of its robots is. Without this the lane went
+        # straight from red or amber to the idle ground bar and the team alone
+        # appeared to skip a state its every robot passes through.
+        for start, stop in _team_waiting(
+            agent_states, (teams or {}).get("teams", {}).get(name) or [],
+            end_time, end_step, min_width,
+        ):
+            axes.barh(lane, max(stop - start, min_width), left=start, height=0.34,
+                      color=TEAM_SPAN_COLOURS["waiting"], edgecolor="none", zorder=2)
 
     absorbed_total = 0
     for agent_id, lane in lane_of_agent.items():
@@ -461,6 +475,33 @@ def _split_on_holds(span, ranges: List[Any]):
     if cursor < last_step:
         pieces.append((at(cursor), at(last_step), "executing", cursor, last_step))
     return pieces
+
+
+def _team_waiting(agent_states, members, end_time, end_step, min_width):
+    """When a team is in W: the union of its robots' waiting spans, merged.
+
+    The union rather than the intersection, for the same reason the lane shows
+    one planning span for four robots -- W here means "this team has committed
+    and is not moving yet", and that is true from the first robot entering it.
+    Sub-pixel slivers are dropped: a member passes through W in microseconds on
+    the paths where the plan was already in hand, and drawing those would stipple
+    the lane with events that cost nothing.
+    """
+    intervals = []
+    for member in members:
+        for start, stop, state, _first, _last in _spans(
+            agent_states.get(member) or [], end_time, end_step
+        ):
+            if state == "waiting" and stop - start >= min_width:
+                intervals.append((start, stop))
+    intervals.sort()
+    merged: List[Tuple[float, float]] = []
+    for start, stop in intervals:
+        if merged and start <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], stop))
+        else:
+            merged.append((start, stop))
+    return merged
 
 
 def _holds(run_dir: str, end_step: Optional[int] = None) -> Dict[str, List[Any]]:

@@ -9,7 +9,9 @@ import sys
 
 sys.path.insert(0, "/home/zixuanwe/Desktop/BEHAVIOR-1K")
 import json, os, tempfile
-from coop2.experiment.agent_timeline import _holds, _merge_ranges, _split_on_holds
+from coop2.experiment.agent_timeline import (
+    _holds, _merge_ranges, _split_on_holds, _team_waiting,
+)
 
 
 def main() -> int:
@@ -81,6 +83,31 @@ def main() -> int:
     assert _merge_ranges(found["agent_1"], 0, 4000) == [(986, 2636), (2840, 4000)], found
     assert "agent_0" not in found, found
     print("  ok: unfiled holds are recovered from the gaps between plans")
+
+    print("\ntest: a team's W is read off its robots, since the brain cannot record it")
+    # The brain writes its own R and I -- it is the thing doing them -- but by
+    # the time the team is in W the plan is handed out and nothing calls it.
+    states = {
+        # (timestamp, env_step, state); W from 10 to 12, then executing.
+        "agent_0": [(0.0, 0, "reasoning"), (10.0, 0, "waiting"), (12.0, 0, "executing")],
+        # Overlapping, and longer: the union is what the lane shows.
+        "agent_1": [(0.0, 0, "reasoning"), (11.0, 0, "waiting"), (14.0, 0, "executing")],
+        # A robot of another team, which must not leak into this one.
+        "agent_9": [(0.0, 0, "waiting")],
+    }
+    spans = _team_waiting(states, ["agent_0", "agent_1"], end_time=20.0,
+                          end_step=100, min_width=0.01)
+    assert spans == [(10.0, 14.0)], spans
+    print("  ok: the union of its members' W spans, merged")
+
+    print("\ntest: a sub-pixel pass through W is not drawn")
+    quick = {"agent_0": [(0.0, 0, "reasoning"), (10.0, 0, "waiting"),
+                         (10.0001, 0, "executing")]}
+    assert _team_waiting(quick, ["agent_0"], 20.0, 100, min_width=0.01) == []
+    # And a team with no members on the figure contributes nothing.
+    assert _team_waiting(states, [], 20.0, 100, 0.01) == []
+    assert _team_waiting(states, ["missing"], 20.0, 100, 0.01) == []
+    print("  ok: slivers, empty teams and unknown members all yield nothing")
 
     print("\nALL TESTS PASSED")
     return 0
