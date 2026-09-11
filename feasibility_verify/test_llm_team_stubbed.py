@@ -737,6 +737,73 @@ def main() -> int:
     assert "agent_0" in str(announced[-1]["content"])
     ok("the replan goes downstream, the way a fresh plan does")
 
+    print("test 20: a leader blocked for a reply and a follower sending it both finish")
+    # The lock-ordering inversion that hung a run for twenty minutes at
+    # env_step 0. Sending stopped being a local act when the broker started
+    # announcing interrupts: it takes the *recipient* team's lock. So a leader
+    # holding its own lock inside request_plan -> before_plan -> _say wanted
+    # team_1's, while team_1's follower, holding its own inside on_interrupt ->
+    # _say, wanted team_0's. Neither could yield, and the plan loop never
+    # reached its first env step.
+    client = StubClient()
+    agents = create_llm_team_topology(
+        llm_client=client, topology="centralized",
+        teams={"team_0": ["agent_0", "agent_1"], "team_1": ["agent_4", "agent_5"]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    for agent in agents.values():
+        agent.symbolic_view = (
+            f"Step 0/2500 | you are {agent.agent_id} in empty_room_0 (a empty room)\n"
+            "Holding: nothing\n\nYou can do:\n  apple.n.01_1: grasp, navigate_to\n"
+        )
+        agent.observe({}, 0)
+        agent.plan = None
+    broker = MessageBroker(agents)
+    broker.teams = {"team_0": ["agent_0", "agent_1"], "team_1": ["agent_4", "agent_5"]}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    # The followers are executing, so the leader's request will interrupt them.
+    for name in ("agent_4", "agent_5"):
+        agents[name]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+
+    done = {}
+
+    def plan(name):
+        done[name] = agents[name].handle_reasoning()
+
+    def interrupt(name):
+        done[name] = agents[name].handle_interrupt()
+
+    leaders = [threading.Thread(target=plan, args=(n,)) for n in ("agent_0", "agent_1")]
+    for thread in leaders:
+        thread.start()
+    # Wait for the request to actually land, rather than for a fixed delay: the
+    # runner only calls handle_interrupt on a member in I, and starting the
+    # follower threads before the message arrives has them close the barrier on
+    # an empty inbox -- which is a test that stages a situation the loop never
+    # produces.
+    waited = time.monotonic()
+    while time.monotonic() - waited < 10.0:
+        if all(agents[n].state is AgentState.I for n in ("agent_4", "agent_5")):
+            break
+        time.sleep(0.02)
+    assert all(agents[n].state is AgentState.I for n in ("agent_4", "agent_5")), (
+        "the leader's request never interrupted the follower team"
+    )
+    followers = [threading.Thread(target=interrupt, args=(n,)) for n in ("agent_4", "agent_5")]
+    for thread in followers:
+        thread.start()
+    for thread in leaders + followers:
+        thread.join(timeout=30.0)
+    stuck = [t.name for t in leaders + followers if t.is_alive()]
+    assert not stuck, f"deadlocked: {len(stuck)} of 4 threads never returned"
+    assert agents["agent_0"].plan is not None, "the leader never got its plan"
+    replies = [m for m in broker.message_log
+               if (m.get("metadata") or {}).get("type") == "follower_response"]
+    assert replies, "the follower never managed to answer"
+    ok("the reply gets through and the leader plans with it")
+
     print("\nALL TESTS PASSED")
     return 0
 

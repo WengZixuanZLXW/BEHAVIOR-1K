@@ -18,6 +18,8 @@ with the following decision flow:
 import sys
 import os
 import json
+import faulthandler
+import signal
 import threading
 import time
 from datetime import datetime
@@ -424,6 +426,13 @@ def run_centralized_experiment(
 
     return agents, env
 
+
+# Every thread's stack on demand: `kill -USR1 <pid>` dumps them to stderr.
+# This loop deadlocks in ways that leave no trace -- two barriers, a broker that
+# reaches into both, and agent threads the runner joins -- and twice the only
+# evidence of a hang was "no progress and no open socket". Registering the
+# handler costs nothing and turns that into a stack trace.
+faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
 
 if __name__ == "__main__":
     import argparse

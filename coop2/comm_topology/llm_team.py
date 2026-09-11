@@ -69,6 +69,7 @@ from coop2.cognitive.agent.cognitive_agent import parse_plan_response
 from coop2.cognitive.agent.llm_client import InterruptDecision
 from coop2.cognitive.agent.prompts import build_team_system_prompt
 from coop2.cognitive.action.action import SymbolicAction
+from coop2.cognitive.agent.agent import AgentState
 from coop2.cognitive.plan import SymbolicPlan
 
 __all__ = [
@@ -159,6 +160,20 @@ class TeamBrain:
 
         self.members: Dict[str, "LLMTeamAgent"] = {}
         self._lock = threading.RLock()
+        # A *second* lock, for the interrupt-barrier state the broker reaches
+        # into (`expect_interrupt`, `confirm_interrupts`). It exists to break a
+        # lock-ordering inversion, and the rule that keeps it working is: never
+        # send a message, and never call the model, while holding either lock.
+        #
+        # The inversion, which hung a run for twenty minutes at env_step 0:
+        # sending is not a local act any more -- the broker takes the
+        # *recipient* team's lock to announce the interrupt. So a leader holding
+        # its own lock inside `request_plan` -> `before_plan` -> `_say` wanted
+        # team_1's lock, while team_1's follower, holding its own lock inside
+        # `on_interrupt` -> `_say`, wanted team_0's. Neither could yield. With
+        # the barrier state under its own short-held lock and every send moved
+        # outside both, there is no cycle left to form.
+        self._barrier_lock = threading.RLock()
         #: Members that have finished their plan and are waiting for the team.
         #: Set when a member enters reasoning, cleared when it takes its new
         #: plan -- so it stays set across the holds a member takes meanwhile.
@@ -616,75 +631,78 @@ class TeamBrain:
     # -- interrupts --------------------------------------------------------
 
     def request_interrupt_decision(self, agent_id: str, messages: List[Dict]) -> Optional[Any]:
-        """Resume/replan for @agent_id, or None while teammates have not arrived.
+        """Resume/replan for @agent_id, once the interrupted teammates arrive.
 
-        Unlike planning there is no hold: a message interrupts every member at
-        once, so the barrier closes on the same tick and nothing needs the world
-        to advance in the meantime.
+        Nothing here holds a lock across a send or a model call -- see the note
+        on ``_barrier_lock``.
         """
         with self._lock:
             # File first, unconditionally: these came off the member's inbox and
             # this is their only remaining route into the team's record.
             self._file_heard(messages)
-            # Then answer, before the decision call rather than after it: a
-            # leader blocked on this reply must not be made to wait for the
-            # follower's own LLM round trip.
-            self.on_interrupt(messages)
 
+        # Answer before deciding rather than after, so a leader blocked on this
+        # reply is not made to wait for the follower's own model round trip.
+        # Outside the lock: it sends.
+        self.on_interrupt(messages)
+
+        with self._barrier_lock:
             if agent_id in self._pending_decisions:
                 return self._pending_decisions.pop(agent_id)
-
+            member = self.members.get(agent_id)
+            if member is not None and member.state is not AgentState.I:
+                # Not interrupted, so not part of this round. `create_agent_thread`
+                # only calls handle_interrupt for a member in I, and a member
+                # that is not in one closes the barrier on nobody: it did that
+                # once and spent a decision call answering an empty inbox.
+                return None
             self._interrupted.add(agent_id)
-            # Wait only for teammates that are actually *in* I. The barrier used
-            # to require every member, on the premise that "a message interrupts
-            # every member at once" -- and that premise is false: the broker
-            # interrupts an agent in W or X and skips one in R, and R is exactly
-            # where the member running the team's planning call sits. Measured
-            # on centralized_agents8_..._011122: the leader's request landed
-            # 2 ms into the run, caught agent_4/5/6 in W, missed agent_7 which
-            # was still reasoning, and the three blocked the world for the full
-            # 30 s timeout. A member that is not in I is not coming; and if it
-            # is in R the team is already planning, so a fresh plan is on its
-            # way for everyone and there is the less to decide.
-            complete = not self._outstanding()
-            if complete:
-                started = time.time()
-                self._pending_decisions = self._decide_interrupts(messages)
-                self.timeline.append(
-                    {"kind": "deciding", "start": started, "end": time.time()}
-                )
-                self._announce_replans()
-                self._decided.set()
-                return self._pending_decisions.pop(agent_id, None)
+            # Wait only for teammates that are actually *in* I. Requiring every
+            # member assumed "a message interrupts every member at once", and
+            # the broker interrupts an agent in W or X and skips one in R --
+            # which is where the member running the team's planning call sits.
+            closing = not self._outstanding()
+        if closing:
+            return self._decide_and_publish(agent_id, messages)
 
         # Not everyone has arrived. **Block here**, staying in I, rather than
         # returning and being marked ready again: a member that bounced straight
-        # back to W showed as "waiting" on the timeline while its teammates were
-        # still interrupted, and the team is supposed to decide together. This
-        # cannot deadlock the way the planning barrier could -- the message
-        # interrupted every member at once, so they are all on their way here,
-        # and nothing needs the world to advance in the meantime.
+        # back to W showed as "waiting" while its teammates were still
+        # interrupted, and the team is supposed to decide together.
         deadline = time.monotonic() + INTERRUPT_BARRIER_TIMEOUT
         while time.monotonic() < deadline:
             if self._decided.wait(timeout=0.05):
-                with self._lock:
+                with self._barrier_lock:
                     return self._pending_decisions.pop(agent_id, None)
             # A teammate this barrier was waiting for may have left I without
-            # ever arriving -- it was never interrupted, or its own wait timed
-            # out. Re-check rather than hold the world until the deadline.
-            with self._lock:
-                if not self._outstanding():
-                    started = time.time()
-                    self._pending_decisions = self._decide_interrupts(messages)
-                    self.timeline.append(
-                        {"kind": "deciding", "start": started, "end": time.time()}
-                    )
-                    self._announce_replans()
-                    self._decided.set()
-                    return self._pending_decisions.pop(agent_id, None)
+            # ever arriving -- never interrupted, or its own wait timed out, or
+            # the broker's confirmation narrowed the set. Re-check rather than
+            # hold the world until the deadline.
+            with self._barrier_lock:
+                closing = not self._outstanding()
+            if closing:
+                return self._decide_and_publish(agent_id, messages)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
               f"to be interrupted and it never completed; resuming")
         return None
+
+    def _decide_and_publish(self, agent_id: str, messages: List[Dict]) -> Optional[Any]:
+        """One model call for the whole team, then hand out the answers.
+
+        Called holding nothing: the call itself and the announcement that
+        follows it both reach outside this team.
+        """
+        started = time.time()
+        decisions = self._decide_interrupts(messages)
+        with self._barrier_lock:
+            self._pending_decisions = decisions
+            self.timeline.append(
+                {"kind": "deciding", "start": started, "end": time.time()}
+            )
+            self._decided.set()
+            mine = self._pending_decisions.pop(agent_id, None)
+        self._announce_replans(decisions)
+        return mine
 
     def expect_interrupt(self, names: List[str]) -> None:
         """The broker is about to interrupt @names. Opens a new barrier round.
@@ -693,7 +711,7 @@ class TeamBrain:
         many to wait for instead of inferring it from who happens to be in I --
         an inference that closed early and spent one LLM call per member.
         """
-        with self._lock:
+        with self._barrier_lock:
             self._expected_interrupt = set(names)
             self._interrupted.clear()
             self._pending_decisions = {}
@@ -707,7 +725,7 @@ class TeamBrain:
         because a member that has already reached the barrier belongs in the
         round whatever the predicate thought of it.
         """
-        with self._lock:
+        with self._barrier_lock:
             if not self._expected_interrupt:
                 return
             self._expected_interrupt = set(names) | set(self._interrupted)
@@ -721,7 +739,7 @@ class TeamBrain:
         that never calls it, or a message that interrupted nobody) it falls back
         to the whole team, which is the old behaviour.
 
-        Callers must hold ``_lock``.
+        Callers must hold ``_barrier_lock``.
         """
         expected = set(self._expected_interrupt)
         if not expected:
@@ -740,10 +758,10 @@ class TeamBrain:
             expected |= self._interrupted
         return [name for name in expected if name not in self._interrupted]
 
-    def _announce_replans(self) -> None:
-        """Hand the replanned robots to `after_replan`. Holds ``_lock``."""
+    def _announce_replans(self, decisions: Dict[str, Any]) -> None:
+        """Hand the replanned robots to `after_replan`. Holds no lock: it sends."""
         replanned = {
-            name: plan for name, (choice, plan) in self._pending_decisions.items()
+            name: plan for name, (choice, plan) in decisions.items()
             if choice is InterruptDecision.REPLAN and plan is not None
         }
         if replanned:
