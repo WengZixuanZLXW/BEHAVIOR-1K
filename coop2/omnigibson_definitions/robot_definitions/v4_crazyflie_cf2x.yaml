@@ -1,0 +1,7 @@
+# Visual / kinematic Crazyflie CF2X import. Flight is commanded by the V4
+# kinematic drone API, not by a native wheel or rotor controller.
+raw_controller_order: []
+default_controllers: {}
+default_joint_pos: []
+usd_path: "objects/robot/v4_crazyflie_cf2x/usd/v4_crazyflie_cf2x.usda"
+base_footprint_link_name: crazyflie_cf2x

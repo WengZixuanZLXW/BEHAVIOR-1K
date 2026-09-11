@@ -1,0 +1,21 @@
+# Official Clearpath Ridgeback + UR5 URDF imported by import_official_v4_robots.sh.
+# The base is intentionally exposed as joints; this is not a Nav2 controller.
+raw_controller_order: ["base", "arm_0"]
+default_controllers:
+  base: JointController
+  arm_0: InverseKinematicsController
+default_joint_pos: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+linear_velocity_gain_for_primitives: 0.05
+angular_velocity_gain_for_primitives: 0.05
+usd_path: "objects/robot/v4_ridgeback_ur5/usd/v4_ridgeback_ur5.usda"
+base_footprint_link_name: base_link
+locomotion:
+  base_joint_names: ["front_rocker", "front_left_wheel", "front_right_wheel", "rear_left_wheel", "rear_right_wheel"]
+  floor_touching_base_link_names: ["front_left_wheel_link", "front_right_wheel_link", "rear_left_wheel_link", "rear_right_wheel_link"]
+manipulation:
+  arm_link_names:
+    "0": ["ur_arm_base_link", "ur_arm_shoulder_link", "ur_arm_upper_arm_link", "ur_arm_forearm_link", "ur_arm_wrist_1_link", "ur_arm_wrist_2_link", "ur_arm_wrist_3_link"]
+  arm_joint_names:
+    "0": ["ur_arm_shoulder_pan_joint", "ur_arm_shoulder_lift_joint", "ur_arm_elbow_joint", "ur_arm_wrist_1_joint", "ur_arm_wrist_2_joint", "ur_arm_wrist_3_joint"]
+  eef_link_names:
+    "0": ur_arm_tool0

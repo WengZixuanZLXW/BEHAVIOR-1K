@@ -1,0 +1,5 @@
+# Robot source trees are local import inputs. FANUC meshes alone exceed normal
+# GitHub file/repository limits. Keep this manifest, but never commit clones.
+*
+!.gitignore
+!README.md

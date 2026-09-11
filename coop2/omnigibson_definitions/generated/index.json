@@ -1,0 +1,62 @@
+[
+  {
+    "id": "S1-V4-LL",
+    "file": "S1-V4-LL.og_scene.json",
+    "scene": "Merom_1_int"
+  },
+  {
+    "id": "S1-V4-LH",
+    "file": "S1-V4-LH.og_scene.json",
+    "scene": "Merom_1_int"
+  },
+  {
+    "id": "S1-V4-HL",
+    "file": "S1-V4-HL.og_scene.json",
+    "scene": "Merom_1_int"
+  },
+  {
+    "id": "S1-V4-HH",
+    "file": "S1-V4-HH.og_scene.json",
+    "scene": "Merom_1_int"
+  },
+  {
+    "id": "S2-V4-LL",
+    "file": "S2-V4-LL.og_scene.json",
+    "scene": "Beechwood_0_int"
+  },
+  {
+    "id": "S2-V4-LH",
+    "file": "S2-V4-LH.og_scene.json",
+    "scene": "Beechwood_0_int"
+  },
+  {
+    "id": "S2-V4-HL",
+    "file": "S2-V4-HL.og_scene.json",
+    "scene": "Beechwood_0_int"
+  },
+  {
+    "id": "S2-V4-HH",
+    "file": "S2-V4-HH.og_scene.json",
+    "scene": "Beechwood_0_int"
+  },
+  {
+    "id": "S3-V4-LL",
+    "file": "S3-V4-LL.og_scene.json",
+    "scene": "Beechwood_1_int"
+  },
+  {
+    "id": "S3-V4-LH",
+    "file": "S3-V4-LH.og_scene.json",
+    "scene": "Beechwood_1_int"
+  },
+  {
+    "id": "S3-V4-HL",
+    "file": "S3-V4-HL.og_scene.json",
+    "scene": "Beechwood_1_int"
+  },
+  {
+    "id": "S3-V4-HH",
+    "file": "S3-V4-HH.og_scene.json",
+    "scene": "Beechwood_1_int"
+  }
+]

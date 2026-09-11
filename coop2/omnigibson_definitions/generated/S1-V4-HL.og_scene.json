@@ -1,0 +1,1057 @@
+{
+  "$schema": "v4-omnigibson-scene-definition/v1",
+  "id": "S1-V4-HL",
+  "generated_from": {
+    "task_design": "custom_task_suite/push_pull_arm_v4/tasks.modified.json",
+    "behavior_scene_state": "vendor/BEHAVIOR-1K/datasets/behavior-1k-assets/scenes/Merom_1_int/json/Merom_1_int_best.json",
+    "legacy_behavior_scene_state": "OmniGibson/omnigibson/data/og_dataset/scenes/Merom_1_int/json/Merom_1_int_best.json",
+    "behavior_bddl_binding": "custom_task_suite/behavior_bddl_bound/Merom_1_int_five_station.binding.json",
+    "task_bddl_problem": "custom_task_suite/push_pull_arm_v4/bddl/S1-V4-HL.bddl",
+    "isaac_staging_scene": "custom_task_suite/push_pull_arm_v4/isaac5/staging_scenes/S1-V4-HL.usda"
+  },
+  "omnigibson_environment_config": {
+    "scene": {
+      "type": "InteractiveTraversableScene",
+      "scene_model": "Merom_1_int",
+      "scene_source": "OG",
+      "include_robots": true,
+      "trav_map_resolution": 0.1,
+      "trav_map_erosion": 2,
+      "trav_map_with_objects": true,
+      "build_graph": true
+    },
+    "robots": [],
+    "objects": [],
+    "task": {
+      "type": "BehaviorTask",
+      "activity_name": "v4_s1_v4_hl",
+      "activity_definition_id": 0,
+      "online_object_sampling": true,
+      "use_presampled_robot_pose": false,
+      "highlight_task_relevant_objects": false
+    }
+  },
+  "custom_robot_import": {
+    "status": "base_models_registered_v4_extensions_pending",
+    "reason": "Official-source Jackal, Ridgeback-UR5, Crazyflie and FANUC base RobotDefinitions are registered locally. The V4 suction cups, cargo plate, scale adjustments and task-specific policies remain explicit extensions.",
+    "target_api": "OmniGibson 5.1+ data-driven RobotDefinition import",
+    "local_omnigibson_compatibility": "registered locally after running omnigibson_definitions/import_official_v4_robots.sh and install_v4_robot_definitions.py in behavior51 (BEHAVIOR-1K v3.9.2 / Isaac Sim 5.1.0). The legacy COHERENT/OmniGibson tree must not be added to PYTHONPATH.",
+    "required_before_loading": [
+      "Attach the V4 suction cup / cargo plate extensions to the registered base model when that V4 role requires them.",
+      "Preserve V4 task scale and action semantics when adding the base model to omnigibson_environment_config.robots."
+    ],
+    "robot_models": {
+      "pull_car": {
+        "v4_model": "v4_jackal_pull_suction",
+        "usd_asset": "custom_task_suite/assets/third_party/jackal/jackal_pull_suction.usda",
+        "capability": "carrier car: move and turn; front suction attachment; may lift/transport a 20 g box; when attached, reverse in local -X only (pull)",
+        "runtime_tool": "V4RobotTools.move / turn / grab / release",
+        "omnigibson_base_model": "v4_jackal"
+      },
+      "push_car": {
+        "v4_model": "v4_jackal_push",
+        "usd_asset": "custom_task_suite/assets/third_party/jackal/jackal.usd",
+        "capability": "move and turn; floor-level push only; no grasp action",
+        "runtime_tool": "V4RobotTools.move / turn",
+        "omnigibson_base_model": "v4_jackal"
+      },
+      "robot_arm": {
+        "v4_model": "v4_ridgeback_ur5_suction",
+        "usd_asset": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "capability": "movable arm: Ridgeback-UR5 tank base moves only forward/backward or turns in place while empty; UR5 joint targets; wrist suction attachment; may lift a 20 g box; base translation and rotation locked while holding",
+        "runtime_tool": "V4RobotTools.forward / backward / turn_left / turn_right / stop / set_arm_joint_targets / grab / release",
+        "omnigibson_base_model": "v4_ridgeback_ur5"
+      },
+      "drone": {
+        "v4_model": "v4_crazyflie_bottom_suction",
+        "usd_asset": "Isaac/Robots/Bitcraze/Crazyflie/cf2x.usd",
+        "capability": "free 3D flight; LL/HL may suction-lift/transport an 8 g box; LH/HH may not lift/transport the 20 g box",
+        "runtime_tool": "V4RobotTools.fly_vertical; V4RobotTools.fly for full_3d",
+        "omnigibson_base_model": "v4_crazyflie_cf2x"
+      },
+      "checkpoint_arm": {
+        "v4_model": "v4_crx10ial_suction",
+        "usd_asset": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "capability": "stationary checkpoint arm with a tool0 suction wrapper; may receive/release the 20 g box; required for every elevated S1 checkpoint handoff",
+        "runtime_tool": "manual Isaac articulation control",
+        "omnigibson_base_model": "v4_fanuc_crx10ial"
+      }
+    },
+    "instances_from_isaac_staging_scene": [
+      {
+        "name": "jackal_s1_m5",
+        "role": "push_car",
+        "custom_robot_model": "v4_jackal_push",
+        "omnigibson_base_model": "v4_jackal",
+        "locomotion_or_control": "differential_drive",
+        "station_hint": "M5",
+        "usd_reference": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "position": [
+          -0.8904137732139239,
+          -0.035,
+          0.03990030090937412
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "ridgeback_franka_s1_m5",
+        "role": "robot_arm",
+        "custom_robot_model": "v4_ridgeback_ur5_suction",
+        "omnigibson_base_model": "v4_ridgeback_ur5",
+        "locomotion_or_control": "differential_drive_plus_ur5",
+        "station_hint": "M5",
+        "usd_reference": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "position": [
+          -1.170308583213925,
+          0.46241618,
+          0.00990030090937395
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crazyflie_s1_m5",
+        "role": "drone",
+        "custom_robot_model": "v4_crazyflie_bottom_suction",
+        "omnigibson_base_model": "v4_crazyflie_cf2x",
+        "locomotion_or_control": "kinematic_3d",
+        "station_hint": "M5",
+        "usd_reference": "custom_task_suite/assets/v4/crazyflie_cf2x_bottom_suction.usda",
+        "position": [
+          -1.2314320332139241,
+          0.017644430000000003,
+          0.023266790909374058
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "jackal_s1_m3",
+        "role": "push_car",
+        "custom_robot_model": "v4_jackal_push",
+        "omnigibson_base_model": "v4_jackal",
+        "locomotion_or_control": "differential_drive",
+        "station_hint": "M3",
+        "usd_reference": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "position": [
+          -1.9403,
+          5.071363116806931,
+          0.04409947100708536
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "ridgeback_franka_s1_m3",
+        "role": "robot_arm",
+        "custom_robot_model": "v4_ridgeback_ur5_suction",
+        "omnigibson_base_model": "v4_ridgeback_ur5",
+        "locomotion_or_control": "differential_drive_plus_ur5",
+        "station_hint": "M3",
+        "usd_reference": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "position": [
+          -2.2201948100000006,
+          5.568779296806921,
+          0.014099471007085125
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crazyflie_s1_m3",
+        "role": "drone",
+        "custom_robot_model": "v4_crazyflie_bottom_suction",
+        "omnigibson_base_model": "v4_crazyflie_cf2x",
+        "locomotion_or_control": "kinematic_3d",
+        "station_hint": "M3",
+        "usd_reference": "custom_task_suite/assets/v4/crazyflie_cf2x_bottom_suction.usda",
+        "position": [
+          -2.28131826,
+          5.124007546806931,
+          0.02746596100708526
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "jackal_s1_m2",
+        "role": "push_car",
+        "custom_robot_model": "v4_jackal_push",
+        "omnigibson_base_model": "v4_jackal",
+        "locomotion_or_control": "differential_drive",
+        "station_hint": "M2",
+        "usd_reference": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "position": [
+          -0.042387128411081165,
+          6.939668279603467,
+          0.04566301368225528
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "ridgeback_franka_s1_m2",
+        "role": "robot_arm",
+        "custom_robot_model": "v4_ridgeback_ur5_suction",
+        "omnigibson_base_model": "v4_ridgeback_ur5",
+        "locomotion_or_control": "differential_drive_plus_ur5",
+        "station_hint": "M2",
+        "usd_reference": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "position": [
+          -0.32228193841108393,
+          7.437084459603467,
+          0.01566301368225481
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crazyflie_s1_m2",
+        "role": "drone",
+        "custom_robot_model": "v4_crazyflie_bottom_suction",
+        "omnigibson_base_model": "v4_crazyflie_cf2x",
+        "locomotion_or_control": "kinematic_3d",
+        "station_hint": "M2",
+        "usd_reference": "custom_task_suite/assets/v4/crazyflie_cf2x_bottom_suction.usda",
+        "position": [
+          -0.3834053884110841,
+          6.992312709603466,
+          0.029029503682255077
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "jackal_s1_m1",
+        "role": "push_car",
+        "custom_robot_model": "v4_jackal_push",
+        "omnigibson_base_model": "v4_jackal",
+        "locomotion_or_control": "differential_drive",
+        "station_hint": "M1",
+        "usd_reference": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "position": [
+          1.9734000000000003,
+          7.9971,
+          0.050189312300867026
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "ridgeback_franka_s1_m1",
+        "role": "robot_arm",
+        "custom_robot_model": "v4_ridgeback_ur5_suction",
+        "omnigibson_base_model": "v4_ridgeback_ur5",
+        "locomotion_or_control": "differential_drive_plus_ur5",
+        "station_hint": "M1",
+        "usd_reference": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "position": [
+          1.69350519,
+          8.49451618,
+          0.020189312300867006
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crazyflie_s1_m1",
+        "role": "drone",
+        "custom_robot_model": "v4_crazyflie_bottom_suction",
+        "omnigibson_base_model": "v4_crazyflie_cf2x",
+        "locomotion_or_control": "kinematic_3d",
+        "station_hint": "M1",
+        "usd_reference": "custom_task_suite/assets/v4/crazyflie_cf2x_bottom_suction.usda",
+        "position": [
+          1.6323817400000002,
+          8.04974443,
+          0.033555802300867056
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "jackal_s1_m4",
+        "role": "push_car",
+        "custom_robot_model": "v4_jackal_push",
+        "omnigibson_base_model": "v4_jackal",
+        "locomotion_or_control": "differential_drive",
+        "station_hint": "M4",
+        "usd_reference": "https://omniverse-content-production.s3-us-west-2.amazonaws.com/Assets/Isaac/5.0/Isaac/Robots/Clearpath/Jackal/jackal.usd",
+        "position": [
+          2.5026,
+          0.2075,
+          0.047641752830684635
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "ridgeback_franka_s1_m4",
+        "role": "robot_arm",
+        "custom_robot_model": "v4_ridgeback_ur5_suction",
+        "omnigibson_base_model": "v4_ridgeback_ur5",
+        "locomotion_or_control": "differential_drive_plus_ur5",
+        "station_hint": "M4",
+        "usd_reference": "custom_task_suite/assets/v4/ridgeback_ur5_suction.usda",
+        "position": [
+          2.22270519,
+          0.70491618,
+          0.017641752830684535
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crazyflie_s1_m4",
+        "role": "drone",
+        "custom_robot_model": "v4_crazyflie_bottom_suction",
+        "omnigibson_base_model": "v4_crazyflie_cf2x",
+        "locomotion_or_control": "kinematic_3d",
+        "station_hint": "M4",
+        "usd_reference": "custom_task_suite/assets/v4/crazyflie_cf2x_bottom_suction.usda",
+        "position": [
+          2.16158174,
+          0.26014443,
+          0.03100824283068453
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crx10ial_s1_m5_c1",
+        "role": "checkpoint_arm",
+        "custom_robot_model": "v4_crx10ial_suction",
+        "omnigibson_base_model": "v4_fanuc_crx10ial",
+        "locomotion_or_control": "fixed_arm",
+        "station_hint": "M5",
+        "usd_reference": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "position": [
+          -0.6017743059047952,
+          1.2270915850583664,
+          0.607006861003664
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crx10ial_s1_m3_c1",
+        "role": "checkpoint_arm",
+        "custom_robot_model": "v4_crx10ial_suction",
+        "omnigibson_base_model": "v4_fanuc_crx10ial",
+        "locomotion_or_control": "fixed_arm",
+        "station_hint": "M3",
+        "usd_reference": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "position": [
+          -1.9514747112699886,
+          3.5899806067448123,
+          0.8601457454579271
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crx10ial_s1_m2_c1",
+        "role": "checkpoint_arm",
+        "custom_robot_model": "v4_crx10ial_suction",
+        "omnigibson_base_model": "v4_fanuc_crx10ial",
+        "locomotion_or_control": "fixed_arm",
+        "station_hint": "M2",
+        "usd_reference": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "position": [
+          -0.41418275240292785,
+          8.03104138228002,
+          0.6372485084148172
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crx10ial_s1_m1_c1",
+        "role": "checkpoint_arm",
+        "custom_robot_model": "v4_crx10ial_suction",
+        "omnigibson_base_model": "v4_fanuc_crx10ial",
+        "locomotion_or_control": "fixed_arm",
+        "station_hint": "M1",
+        "usd_reference": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "position": [
+          1.3343497611356534,
+          9.911078101968505,
+          0.6980347222453779
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      },
+      {
+        "name": "crx10ial_s1_m4_c1",
+        "role": "checkpoint_arm",
+        "custom_robot_model": "v4_crx10ial_suction",
+        "omnigibson_base_model": "v4_fanuc_crx10ial",
+        "locomotion_or_control": "fixed_arm",
+        "station_hint": "M4",
+        "usd_reference": "custom_task_suite/assets/v4/fanuc_crx10ial_suction.usda",
+        "position": [
+          1.6397805075713172,
+          0.22848790316027118,
+          0.49370494074471305
+        ],
+        "orientation_wxyz": [
+          1.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "scale": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    ],
+    "role_coverage": {
+      "task_required_roles": [
+        "push_car"
+      ],
+      "roles_present_in_staging_scene": [
+        "checkpoint_arm",
+        "drone",
+        "push_car",
+        "robot_arm"
+      ],
+      "missing_task_roles_from_staging": []
+    }
+  },
+  "v4_task_semantics": {
+    "cell": "HL",
+    "parallel_work_streams": 5,
+    "participation": "low",
+    "box_mass_kg": 0.008,
+    "execution_policy": "independent parallel packages",
+    "robot_ability_profile": {
+      "movable_arm": "base translation and turning locked while suction-grabbing",
+      "drone": "free 3D flight; may suction-lift/transport an 8 g box"
+    },
+    "packages": [
+      {
+        "id": "P1",
+        "depends_on": [],
+        "route": "S1-M5",
+        "required_robot_roles": [
+          "push_car"
+        ]
+      },
+      {
+        "id": "P2",
+        "depends_on": [],
+        "route": "S1-M3",
+        "required_robot_roles": [
+          "push_car"
+        ]
+      },
+      {
+        "id": "P3",
+        "depends_on": [],
+        "route": "S1-M2",
+        "required_robot_roles": [
+          "push_car"
+        ]
+      },
+      {
+        "id": "P4",
+        "depends_on": [],
+        "route": "S1-M1",
+        "required_robot_roles": [
+          "push_car"
+        ]
+      },
+      {
+        "id": "P5",
+        "depends_on": [],
+        "route": "S1-M4",
+        "required_robot_roles": [
+          "push_car"
+        ]
+      }
+    ],
+    "routes": [
+      {
+        "id": "S1-M5",
+        "source_station": "M5",
+        "source_room_instance": "childs_room_0",
+        "source_room_type": "childs_room",
+        "floor_bddl_instance": "floor.n.01_5",
+        "floor_runtime_name": "floors_nuacoz_0",
+        "initial_relation": "ONTOP(packing_box, floor.n.01_5)",
+        "source_placement": "room centre",
+        "checkpoints": [
+          {
+            "id": "S1-M5-C1",
+            "sequence": 1,
+            "kind": "checkpoint",
+            "relation": "ONTOP",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "station": "M5",
+            "room_instance": "childs_room_0",
+            "room_type": "childs_room",
+            "floor_runtime_name": "floors_nuacoz_0",
+            "bddl_support": "cabinet.n.01_5",
+            "support_runtime_name": "bottom_cabinet_dajebq_0",
+            "support_scene_category": "bottom_cabinet",
+            "support_prim_path": "/World/bottom_cabinet_dajebq_0",
+            "bddl_mapping_status": "declared in V4 BDDL binding",
+            "isaac_marker_id": "checkpoint_s1_m5_c1",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c1",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "cabinet.n.01_5",
+              "candidate_runtime_name": "bottom_cabinet_dajebq_0",
+              "mapping_method": "synced_from_S1-V4-HH"
+            }
+          }
+        ],
+        "leg_count": 5,
+        "destination_station": "M3",
+        "destination_room_instance": "kitchen_0",
+        "destination_room_type": "kitchen",
+        "destination_floor_bddl_instance": "floor.n.01_3",
+        "destination_floor_runtime_name": "floors_hcqtge_0",
+        "fixture_bddl_instance": "shelf.n.01_3",
+        "fixture_type": "shelf.n.01",
+        "fixture_runtime_name": "shelf_owvfik_0",
+        "fixture_binding_status": "real BEHAVIOR/OG fixture binding",
+        "goal_relation": "ONTOP(packing_box, shelf.n.01_3)",
+        "support_scene_category": "shelf",
+        "support_prim_path": "/World/shelf_owvfik_0",
+        "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+        "spawn_nodes": [
+          {
+            "id": "S1-M5-SP2",
+            "kind": "spawn",
+            "spawn_entity": "target_box",
+            "relation": "ONTOP",
+            "station": "M5",
+            "room_instance": "childs_room_0",
+            "room_type": "childs_room",
+            "bddl_support": "floor.n.01_5",
+            "support_runtime_name": "floors_nuacoz_0",
+            "support_scene_category": "floors",
+            "support_prim_path": "/World/floors_nuacoz_0",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "isaac_marker_id": "spawn_s1_m5",
+            "isaac_marker_mapping": {
+              "marker_id": "spawn_s1_m5",
+              "marker_kind": "spawn",
+              "candidate_bddl_support": "floor.n.01_5",
+              "candidate_runtime_name": "floors_nuacoz_0",
+              "mapping_method": "v4_box_scale_and_marker_normalization"
+            }
+          }
+        ],
+        "isaac_marker_id": "checkpoint_s1_m5_c2",
+        "isaac_marker_mapping": {
+          "marker_id": "checkpoint_s1_m5_c2",
+          "marker_kind": "checkpoint",
+          "candidate_bddl_support": "shelf.n.01_3",
+          "candidate_runtime_name": "shelf_owvfik_0",
+          "mapping_method": "synced_from_S1-V4-HH"
+        }
+      },
+      {
+        "id": "S1-M3",
+        "source_station": "M3",
+        "source_room_instance": "kitchen_0",
+        "source_room_type": "kitchen",
+        "floor_bddl_instance": "floor.n.01_3",
+        "floor_runtime_name": "floors_hcqtge_0",
+        "initial_relation": "ONTOP(packing_box, floor.n.01_3)",
+        "source_placement": "room centre",
+        "checkpoints": [
+          {
+            "id": "S1-M3-C1",
+            "sequence": 1,
+            "kind": "checkpoint",
+            "relation": "ONTOP",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "station": "M3",
+            "room_instance": "kitchen_0",
+            "room_type": "kitchen",
+            "floor_runtime_name": "floors_hcqtge_0",
+            "bddl_support": "shelf.n.01_3",
+            "support_runtime_name": "shelf_owvfik_0",
+            "support_scene_category": "shelf",
+            "support_prim_path": "/World/shelf_owvfik_0",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init"
+          }
+        ],
+        "leg_count": 5,
+        "destination_station": "M2",
+        "destination_room_instance": "dining_room_0",
+        "destination_room_type": "dining_room",
+        "destination_floor_bddl_instance": "floor.n.01_2",
+        "destination_floor_runtime_name": "floors_ekqfhr_0",
+        "fixture_bddl_instance": "armchair.n.01_1",
+        "fixture_type": "armchair.n.01",
+        "fixture_runtime_name": "armchair_qplklw_2",
+        "fixture_binding_status": "real BEHAVIOR/OG fixture binding",
+        "goal_relation": "ONTOP(packing_box, armchair.n.01_1)",
+        "support_scene_category": "armchair",
+        "support_prim_path": "/World/armchair_qplklw_2",
+        "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+        "spawn_nodes": [
+          {
+            "id": "S1-M3-SP2",
+            "kind": "spawn",
+            "spawn_entity": "target_box",
+            "relation": "ONTOP",
+            "station": "M3",
+            "room_instance": "kitchen_0",
+            "room_type": "kitchen",
+            "bddl_support": "fridge.n.01_1",
+            "support_runtime_name": "fridge_xyejdx_0",
+            "support_scene_category": "fridge",
+            "support_prim_path": "/World/fridge_xyejdx_0",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "isaac_marker_id": "spawn_s1_m3",
+            "isaac_marker_mapping": {
+              "marker_id": "spawn_s1_m3",
+              "marker_kind": "spawn",
+              "candidate_bddl_support": "fridge.n.01_1",
+              "candidate_runtime_name": "fridge_xyejdx_0",
+              "mapping_method": "v4_box_scale_and_marker_normalization"
+            }
+          }
+        ],
+        "isaac_marker_id": "checkpoint_s1_m5_c4",
+        "isaac_marker_mapping": {
+          "marker_id": "checkpoint_s1_m5_c4",
+          "marker_kind": "checkpoint",
+          "candidate_bddl_support": "armchair.n.01_1",
+          "candidate_runtime_name": "armchair_qplklw_2",
+          "mapping_method": "synced_from_S1-V4-HH"
+        }
+      },
+      {
+        "id": "S1-M2",
+        "source_station": "M2",
+        "source_room_instance": "dining_room_0",
+        "source_room_type": "dining_room",
+        "floor_bddl_instance": "floor.n.01_2",
+        "floor_runtime_name": "floors_ekqfhr_0",
+        "initial_relation": "ONTOP(packing_box, floor.n.01_2)",
+        "source_placement": "room centre",
+        "checkpoints": [
+          {
+            "id": "S1-M2-C1",
+            "sequence": 1,
+            "kind": "checkpoint",
+            "relation": "ONTOP",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "station": "M2",
+            "room_instance": "dining_room_0",
+            "room_type": "dining_room",
+            "floor_runtime_name": "floors_ekqfhr_0",
+            "bddl_support": "armchair.n.01_1",
+            "support_runtime_name": "armchair_qplklw_2",
+            "support_scene_category": "armchair",
+            "support_prim_path": "/World/armchair_qplklw_2",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "isaac_marker_id": "checkpoint_s1_m5_c5",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c5",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "breakfast_table.n.01_2",
+              "candidate_runtime_name": "breakfast_table_skczfi_0",
+              "mapping_method": "synced_from_S1-V4-HH"
+            }
+          }
+        ],
+        "leg_count": 5,
+        "destination_station": "M1",
+        "destination_room_instance": "living_room_0",
+        "destination_room_type": "living_room",
+        "destination_floor_bddl_instance": "floor.n.01_1",
+        "destination_floor_runtime_name": "floors_xzlkei_0",
+        "fixture_bddl_instance": "coffee_table.n.01_1",
+        "fixture_type": "coffee_table.n.01",
+        "fixture_runtime_name": "coffee_table_fqluyq_0",
+        "fixture_binding_status": "real BEHAVIOR/OG fixture binding",
+        "goal_relation": "ONTOP(packing_box, coffee_table.n.01_1)",
+        "support_scene_category": "coffee_table",
+        "support_prim_path": "/World/coffee_table_fqluyq_0",
+        "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+        "spawn_nodes": [
+          {
+            "id": "S1-M2-SP2",
+            "kind": "spawn",
+            "spawn_entity": "target_box",
+            "relation": "ONTOP",
+            "station": "M2",
+            "room_instance": "dining_room_0",
+            "room_type": "dining_room",
+            "bddl_support": "breakfast_table.n.01_2",
+            "support_runtime_name": "breakfast_table_skczfi_0",
+            "support_scene_category": "breakfast_table",
+            "support_prim_path": "/World/breakfast_table_skczfi_0",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "isaac_marker_id": "checkpoint_s1_m5_c4",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c4",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "breakfast_table.n.01_2",
+              "candidate_runtime_name": "breakfast_table_skczfi_0",
+              "mapping_method": "v4_box_scale_and_marker_normalization"
+            }
+          }
+        ],
+        "isaac_marker_id": "checkpoint_s1_m5_c6",
+        "isaac_marker_mapping": {
+          "marker_id": "checkpoint_s1_m5_c6",
+          "marker_kind": "checkpoint",
+          "candidate_bddl_support": "coffee_table.n.01_1",
+          "candidate_runtime_name": "coffee_table_fqluyq_0",
+          "mapping_method": "synced_from_S1-V4-HH"
+        }
+      },
+      {
+        "id": "S1-M1",
+        "source_station": "M1",
+        "source_room_instance": "living_room_0",
+        "source_room_type": "living_room",
+        "floor_bddl_instance": "floor.n.01_1",
+        "floor_runtime_name": "floors_xzlkei_0",
+        "initial_relation": "ONTOP(packing_box, floor.n.01_1)",
+        "source_placement": "room centre",
+        "checkpoints": [
+          {
+            "id": "S1-M1-C1",
+            "sequence": 1,
+            "kind": "checkpoint",
+            "relation": "ONTOP",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "station": "M1",
+            "room_instance": "living_room_0",
+            "room_type": "living_room",
+            "floor_runtime_name": "floors_xzlkei_0",
+            "bddl_support": "bottom_cabinet.n.01_1",
+            "support_runtime_name": "bottom_cabinet_jhymlr_0",
+            "support_scene_category": "bottom_cabinet",
+            "support_prim_path": "/World/bottom_cabinet_jhymlr_0",
+            "bddl_mapping_status": "runtime scene object; BDDL declaration required",
+            "isaac_marker_id": "checkpoint_s1_m5_c7",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c7",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "bottom_cabinet.n.01_1",
+              "candidate_runtime_name": "bottom_cabinet_jhymlr_0",
+              "mapping_method": "synced_from_S1-V4-HH"
+            }
+          }
+        ],
+        "leg_count": 5,
+        "destination_station": "M4",
+        "destination_room_instance": "bedroom_0",
+        "destination_room_type": "bedroom",
+        "destination_floor_bddl_instance": "floor.n.01_4",
+        "destination_floor_runtime_name": "floors_rqcmwl_0",
+        "fixture_bddl_instance": "bed.n.01_2",
+        "fixture_type": "bed.n.01",
+        "fixture_runtime_name": "bed_zrumze_1",
+        "fixture_binding_status": "real BEHAVIOR/OG fixture binding",
+        "goal_relation": "ONTOP(packing_box, bed.n.01_2)",
+        "spawn_nodes": [
+          {
+            "id": "S1-M1-SP2",
+            "kind": "spawn",
+            "spawn_entity": "target_box",
+            "relation": "ONTOP",
+            "station": "M1",
+            "room_instance": "living_room_0",
+            "room_type": "living_room",
+            "bddl_support": "coffee_table.n.01_1",
+            "support_runtime_name": "coffee_table_fqluyq_0",
+            "support_scene_category": "coffee_table",
+            "support_prim_path": "/World/coffee_table_fqluyq_0",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "isaac_marker_id": "checkpoint_s1_m5_c6",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c6",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "coffee_table.n.01_1",
+              "candidate_runtime_name": "coffee_table_fqluyq_0",
+              "mapping_method": "v4_box_scale_and_marker_normalization"
+            }
+          }
+        ],
+        "support_scene_category": "bed",
+        "support_prim_path": "/World/bed_zrumze_1",
+        "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+        "isaac_marker_id": "checkpoint_s1_m5_c9",
+        "isaac_marker_mapping": {
+          "marker_id": "checkpoint_s1_m5_c9",
+          "marker_kind": "checkpoint",
+          "candidate_bddl_support": "bed.n.01_2",
+          "candidate_runtime_name": "bed_zrumze_0",
+          "mapping_method": "synced_from_S1-V4-HH"
+        }
+      },
+      {
+        "id": "S1-M4",
+        "source_station": "M4",
+        "source_room_instance": "bedroom_0",
+        "source_room_type": "bedroom",
+        "floor_bddl_instance": "floor.n.01_4",
+        "floor_runtime_name": "floors_rqcmwl_0",
+        "initial_relation": "ONTOP(packing_box, floor.n.01_4)",
+        "source_placement": "room centre",
+        "checkpoints": [
+          {
+            "id": "S1-M4-C1",
+            "sequence": 1,
+            "kind": "checkpoint",
+            "relation": "ONTOP",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "station": "M4",
+            "room_instance": "bedroom_0",
+            "room_type": "bedroom",
+            "floor_runtime_name": "floors_rqcmwl_0",
+            "bddl_support": "bottom_cabinet.n.01_2",
+            "support_runtime_name": "bottom_cabinet_jrhgeu_0",
+            "support_scene_category": "bottom_cabinet",
+            "support_prim_path": "/World/bottom_cabinet_jrhgeu_0",
+            "bddl_mapping_status": "runtime scene object; BDDL declaration required",
+            "isaac_marker_id": "checkpoint_s1_m5_c8",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c8",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "bottom_cabinet.n.01_2",
+              "candidate_runtime_name": "bottom_cabinet_jrhter_0",
+              "mapping_method": "synced_from_S1-V4-HH"
+            }
+          }
+        ],
+        "leg_count": 5,
+        "destination_station": "M5",
+        "destination_room_instance": "childs_room_0",
+        "destination_room_type": "childs_room",
+        "destination_floor_bddl_instance": "floor.n.01_5",
+        "destination_floor_runtime_name": "floors_nuacoz_0",
+        "fixture_bddl_instance": "bed.n.01_1",
+        "fixture_type": "bed.n.01",
+        "fixture_runtime_name": "bed_zrumze_0",
+        "fixture_binding_status": "real BEHAVIOR/OG fixture binding",
+        "goal_relation": "ONTOP(packing_box, bed.n.01_1)",
+        "support_scene_category": "bed",
+        "support_prim_path": "/World/bed_zrumze_0",
+        "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+        "spawn_nodes": [
+          {
+            "id": "S1-M4-SP2",
+            "kind": "spawn",
+            "spawn_entity": "target_box",
+            "relation": "ONTOP",
+            "station": "M4",
+            "room_instance": "bedroom_0",
+            "room_type": "bedroom",
+            "bddl_support": "bed.n.01_2",
+            "support_runtime_name": "bed_zrumze_1",
+            "support_scene_category": "bed",
+            "support_prim_path": "/World/bed_zrumze_1",
+            "bddl_mapping_status": "user-authored mapping; add this object to BDDL :objects / :init",
+            "assignment_status": "edited locally; Isaac validation pending",
+            "isaac_marker_id": "checkpoint_s1_m5_c9",
+            "isaac_marker_mapping": {
+              "marker_id": "checkpoint_s1_m5_c9",
+              "marker_kind": "checkpoint",
+              "candidate_bddl_support": "bed.n.01_2",
+              "candidate_runtime_name": "bed_zrumze_1",
+              "mapping_method": "v4_box_scale_and_marker_normalization"
+            }
+          }
+        ],
+        "isaac_marker_id": "destination_s1_m5",
+        "isaac_marker_mapping": {
+          "marker_id": "destination_s1_m5",
+          "marker_kind": "destination",
+          "candidate_bddl_support": "bed.n.01_1",
+          "candidate_runtime_name": "bed_nwspqf_0",
+          "mapping_method": "synced_from_S1-V4-HH"
+        }
+      }
+    ]
+  }
+}

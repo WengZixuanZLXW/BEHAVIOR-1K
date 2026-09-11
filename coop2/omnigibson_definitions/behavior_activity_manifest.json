@@ -1,0 +1,91 @@
+{
+  "schema": "v4-behavior-activity-registration/v1",
+  "bddl_activity_root": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions",
+  "activities": [
+    {
+      "activity_name": "v4_s1_v4_hh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S1-V4-HH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s1_v4_hh/problem0.bddl",
+      "object_synsets": "agent.n.01,armchair.n.01,bed.n.01,coffee_table.n.01,floor.n.01,packing_box.n.02,shelf.n.01"
+    },
+    {
+      "activity_name": "v4_s1_v4_hl",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S1-V4-HL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s1_v4_hl/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s1_v4_lh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S1-V4-LH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s1_v4_lh/problem0.bddl",
+      "object_synsets": "agent.n.01,cabinet.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s1_v4_ll",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S1-V4-LL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s1_v4_ll/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s2_v4_hh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S2-V4-HH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s2_v4_hh/problem0.bddl",
+      "object_synsets": "agent.n.01,breakfast_table.n.01,floor.n.01,packing_box.n.02,shelf.n.01,stool.n.01,straight_chair.n.01"
+    },
+    {
+      "activity_name": "v4_s2_v4_hl",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S2-V4-HL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s2_v4_hl/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s2_v4_lh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S2-V4-LH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s2_v4_lh/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s2_v4_ll",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S2-V4-LL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s2_v4_ll/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s3_v4_hh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S3-V4-HH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s3_v4_hh/problem0.bddl",
+      "object_synsets": "agent.n.01,bed.n.01,breakfast_table.n.01,floor.n.01,packing_box.n.02,sofa.n.01"
+    },
+    {
+      "activity_name": "v4_s3_v4_hl",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S3-V4-HL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s3_v4_hl/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s3_v4_lh",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S3-V4-LH.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s3_v4_lh/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    },
+    {
+      "activity_name": "v4_s3_v4_ll",
+      "activity_definition_id": "0",
+      "source_bddl": "/home/doujiang/Documents/COHERENT/custom_task_suite/push_pull_arm_v4/bddl/S3-V4-LL.bddl",
+      "registered_problem": "/home/doujiang/Documents/COHERENT/vendor/BEHAVIOR-1K/bddl3/bddl/activity_definitions/v4_s3_v4_ll/problem0.bddl",
+      "object_synsets": "agent.n.01,floor.n.01,packing_box.n.02"
+    }
+  ],
+  "note": "Generated BDDL copies are local installation state; re-run this script after updating BEHAVIOR/BDDL."
+}

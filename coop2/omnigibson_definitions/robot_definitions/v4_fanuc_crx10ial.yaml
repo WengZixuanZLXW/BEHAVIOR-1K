@@ -1,0 +1,14 @@
+# Official FANUC CRX-10iA/L description, with no gripper attached yet.
+raw_controller_order: ["arm_0"]
+default_controllers:
+  arm_0: InverseKinematicsController
+default_joint_pos: [0, 0, 0, 0, 0, 0]
+usd_path: "objects/robot/v4_fanuc_crx10ial/usd/v4_fanuc_crx10ial.usda"
+base_footprint_link_name: base_link
+manipulation:
+  arm_link_names:
+    "0": ["base_link", "J1_link", "J2_link", "J3_link", "J4_link", "J5_link", "J6_link"]
+  arm_joint_names:
+    "0": ["J1", "J2", "J3", "J4", "J5", "J6"]
+  eef_link_names:
+    "0": fanuc_flange

@@ -1,0 +1,12 @@
+# Official Clearpath Jackal URDF imported by import_official_v4_robots.sh.
+raw_controller_order: ["base"]
+default_controllers:
+  base: JointController
+default_joint_pos: [0, 0, 0, 0]
+linear_velocity_gain_for_primitives: 0.05
+angular_velocity_gain_for_primitives: 0.05
+usd_path: "objects/robot/v4_jackal/usd/v4_jackal.usda"
+base_footprint_link_name: chassis_link
+locomotion:
+  base_joint_names: ["front_left_wheel", "front_right_wheel", "rear_left_wheel", "rear_right_wheel"]
+  floor_touching_base_link_names: ["front_left_wheel_link", "front_right_wheel_link", "rear_left_wheel_link", "rear_right_wheel_link"]

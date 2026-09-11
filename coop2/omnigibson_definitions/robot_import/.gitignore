@@ -1,0 +1,4 @@
+# Recreated by prepare_official_robot_imports.py.  It contains absolute paths,
+# resolved URDFs, mesh aliases, and a local ROS ament index.
+*
+!.gitignore
