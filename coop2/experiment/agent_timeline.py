@@ -37,14 +37,19 @@ STATE_COLOURS = {
     "interrupted": "#edae49",  # I -- message arrived, world frozen
     "waiting": "#8d99ae",      # W -- ready, waiting for the others
     "executing": "#2a9d8f",    # X -- primitive advancing
-    # A hold is state X too: the member is running a `wait` primitive to keep
-    # the world moving for its teammates. Drawn as executing it is
-    # indistinguishable from work, and it is not work -- agent_2 in
-    # centralized_agents8_..._040821 shows 33 consecutive 60-tick holds from
-    # env_step 474 to the end, 81 % of the episode, which read as a series of
-    # green "it did something" bars.
-    "holding": "#9dd6cf",      # X, but idling for the team
 }
+
+#: Not a fifth state. A hold *is* state X -- the member is running a `wait`
+#: primitive, which is how it keeps the world moving while its teammates
+#: finish -- so agent_states.json says "executing" for it and cannot say more.
+#: What separates the two is the plan's specification in plan_logs.json, which
+#: is why this is a shading of executing and not an entry beside it.
+#:
+#: Worth separating because the two look identical and are not: agent_2 in
+#: centralized_agents8_..._040821 spent 33 consecutive 60-tick holds from
+#: env_step 474 to the end, 81 % of the episode, and every one of them drew as
+#: a green bar saying it did something.
+HOLDING_COLOUR = "#9dd6cf"
 
 #: Messages are drawn in one colour on purpose: the arrow already carries the
 #: direction, and colouring by metadata["type"] would compete with the state
@@ -298,7 +303,8 @@ def plot_agent_state_timeline(
                 state = "holding"
             axes.barh(
                 lane, stop - start, left=start, height=0.55,
-                color=STATE_COLOURS.get(state, "#cccccc"),
+                color=(HOLDING_COLOUR if state == "holding"
+                       else STATE_COLOURS.get(state, "#cccccc")),
                 edgecolor="white", linewidth=0.5,
             )
             if state not in seen_states:
@@ -345,8 +351,16 @@ def plot_agent_state_timeline(
 
     order = [s for s in ("reasoning", "interrupted", "waiting", "executing", "holding")
              if s in seen_states]
-    labels = {"holding": "holding for the team (idle)"}
-    handles = [mpatches.Patch(color=STATE_COLOURS[s], label=labels.get(s, s)) for s in order]
+    # "holding" is a shading of executing, not a state of its own, and the
+    # label says so -- side by side and unqualified they read as five states.
+    labels = {"holding": "executing: holding for the team (idle)"}
+    handles = [
+        mpatches.Patch(
+            color=HOLDING_COLOUR if s == "holding" else STATE_COLOURS.get(s, "#cccccc"),
+            label=labels.get(s, s),
+        )
+        for s in order
+    ]
     if lane_of_team:
         # Only the ground bar gets an entry. A team lane is red exactly when its
         # members are, and amber exactly when they are interrupted, so it reads
