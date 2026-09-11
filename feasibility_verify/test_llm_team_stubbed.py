@@ -52,6 +52,8 @@ class StubClient:
         self.interrupt_calls = 0
         self.last_prompt = None
         self.last_interrupt_prompt = None
+        self.text_calls = 0
+        self.last_text_prompt = None
         self.interrupt_script = {}
 
     def _members_in(self, messages):
@@ -73,6 +75,12 @@ class StubClient:
             for name in self._members_in(messages)
         ]
         return LLMTeamPlanResponse(plans=plans, reasoning="split by distance"), dict(USAGE)
+
+    def generate(self, messages, response_format=None, temperature=0.7):
+        """Plain text, for a follower composing its report."""
+        self.text_calls += 1
+        self.last_text_prompt = messages[-1]["content"]
+        return "we will take the west apples, leave the east to you", dict(USAGE)
 
     def generate_team_interrupt_decision(self, messages, temperature=0.7):
         self.interrupt_calls += 1
@@ -635,7 +643,38 @@ def main() -> int:
     agents[ids[0]].plan = agents[ids[0]].build_hold_plan()
     assert "idle, waiting for its team" in follower._status_report()
     assert "wait_for_team" not in follower._status_report()
-    ok("room, held object, a reachable target and the plan -- all four, no LLM call")
+    ok("room, held object, a reachable target and the plan -- all four")
+
+    print("test 18: the follower writes its own reply, grounded in those facts")
+    # Upstream's follower composes its answer (`_build_follower_response` is
+    # `self._generate_message(...)`); this port had replaced it with the
+    # assembled report, which saved a call and lost the point of asking -- a
+    # rendering of a team's own state cannot propose anything.
+    agents[ids[0]].plan = None
+    before = client.text_calls
+    reply = follower._compose_report()
+    assert client.text_calls == before + 1, "the report was not composed by the model"
+    assert reply == "we will take the west apples, leave the east to you"
+    # Grounded: the assembled facts go into the prompt, not onto the wire.
+    assert "in empty_room_0" in client.last_text_prompt
+    assert "holding apple.n.01_2" in client.last_text_prompt
+    assert "nearest target coffee_table.n.01_1 (in range)" in client.last_text_prompt
+
+    # A failure degrades to the assembled report, not to silence.
+    class Mute(StubClient):
+        def generate(self, messages, response_format=None, temperature=0.7):
+            raise RuntimeError("no model")
+
+    muted = create_llm_team_topology(
+        llm_client=Mute(), topology="centralized",
+        teams={"team_0": ["agent_0"], "team_1": ["agent_4"]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    muted["agent_4"].symbolic_view = view
+    muted["agent_4"].observe({}, 0)
+    fallback = muted["agent_4"].brain._compose_report()
+    assert "in empty_room_0" in fallback and "holding apple.n.01_2" in fallback
+    ok("the model writes it from the facts, and a dead model falls back to them")
 
     print("\nALL TESTS PASSED")
     return 0

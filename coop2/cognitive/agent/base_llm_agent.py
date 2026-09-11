@@ -289,15 +289,20 @@ class BaseLLMAgent(Agent):
         messages: List[Dict],
         fallback: str,
         temperature: Optional[float] = None,
+        label: str = "Message Generation",
     ) -> str:
-        """Call the LLM for a plain text message and record usage consistently."""
+        """Call the LLM for a plain text message and record usage consistently.
+
+        @label names the call in llm_calls.jsonl. A team passes its own so the
+        log distinguishes which team spoke, the way its plan calls do.
+        """
         try:
             response, usage = self.llm_client.generate(
                 messages=messages,
                 response_format=None,
                 temperature=self.temperature if temperature is None else temperature,
             )
-            self._record_llm_usage(usage, "Message Generation", messages, response)
+            self._record_llm_usage(usage, label, messages, response)
             return str(response)
         except Exception as e:
             self._record_llm_error(e)

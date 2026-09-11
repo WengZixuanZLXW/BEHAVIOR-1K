@@ -971,7 +971,7 @@ class FollowerTeamBrain(TeamBrain):
         # the members inside that barrier are in R and R is not interruptible,
         # so the team would split.
         self._say(
-            self._status_report(), "follower_response",
+            self._compose_report(), "follower_response",
             interrupts=False, expected_reply=True,
         )
 
@@ -980,6 +980,58 @@ class FollowerTeamBrain(TeamBrain):
         return any(
             (message.get("metadata") or {}).get("type") == "leader_broadcast"
             for message in self._heard
+        )
+
+    def _compose_report(self) -> str:
+        """The reply the leader gets: written by the model, grounded in facts.
+
+        Upstream's follower writes its own answer (`_build_follower_response` is
+        `self._generate_message(self.last_leader_request)`), and this port had
+        replaced it with the assembled report on the grounds that paraphrasing
+        facts the brain already holds doubles the topology's cost. That saved a
+        call and lost the point of asking: a leader allocating work wants to be
+        told what a team *proposes*, and a rendering of its own state cannot
+        propose anything.
+
+        So the model writes it, and `_status_report` goes into the prompt rather
+        than onto the wire -- the answer is grounded in the same facts it used
+        to be limited to, and the model cannot invent a position or a holding.
+        On any failure the assembled report is what gets sent, so this degrades
+        to the previous behaviour rather than to silence.
+
+        It costs one call per leader round, which the leader now blocks for.
+        That is one model round trip with the world frozen -- the same price
+        every reasoning step in this design pays, and the reason the request
+        asks for a proposal rather than a status.
+        """
+        members = [self.members[n] for n in self.member_ids if n in self.members]
+        if not members:
+            return self._status_report()
+        anchor = members[0]
+        request = next(
+            (str(m.get("content", "")) for m in reversed(self._heard)
+             if (m.get("metadata") or {}).get("type") == "leader_broadcast"),
+            "Report your robots' status and what you propose to do next.",
+        )
+        prompt = [
+            {"role": "system", "content": self._system_prompt(anchor)},
+            {"role": "user", "content": "\n".join([
+                f"=== STEP {anchor.env_step} ===",
+                f"\nYour leader asked TEAM {self.team_name}:",
+                f"  {request}",
+                "\nWhat your robots are actually doing right now:",
+                f"  {self._status_report()}",
+                "\nReply in two or three sentences, as this team, to the leader. "
+                "Say what you propose to take on and what you would rather leave "
+                "to the other teams. Use only the object ids above. No preamble.",
+            ])},
+        ]
+        if anchor._should_print_llm_io():
+            anchor._print_llm_messages(f"Team Report [{self.team_name}]", prompt)
+        return anchor._generate_text_from_messages(
+            messages=prompt,
+            fallback=self._status_report(),
+            label=f"Team Report [{self.team_name}]",
         )
 
     def _status_report(self) -> str:
