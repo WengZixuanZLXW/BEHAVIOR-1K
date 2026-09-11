@@ -221,6 +221,17 @@ class TeamBrain:
     def after_plan(self) -> None:
         """Communication that follows from the plan. Default: none."""
 
+    def after_replan(self, plans: Dict[str, SymbolicPlan]) -> None:
+        """Communication that follows a replan made on the interrupt path.
+
+        Upstream's handle_interrupt is `self._execute_flow()` -- the same flow
+        as reasoning, communication included -- so a replan there is announced
+        exactly as a fresh plan is. This port's team layer decided per robot and
+        said nothing, so a chain team could replan and the team after it kept
+        working against the allocation from the round before. Default: none, for
+        the roles that do not announce plans.
+        """
+
     def on_interrupt(self, messages: List[Dict]) -> None:
         """Called as a member reaches the interrupt barrier, before deciding.
 
@@ -642,6 +653,7 @@ class TeamBrain:
                 self.timeline.append(
                     {"kind": "deciding", "start": started, "end": time.time()}
                 )
+                self._announce_replans()
                 self._decided.set()
                 return self._pending_decisions.pop(agent_id, None)
 
@@ -667,6 +679,7 @@ class TeamBrain:
                     self.timeline.append(
                         {"kind": "deciding", "start": started, "end": time.time()}
                     )
+                    self._announce_replans()
                     self._decided.set()
                     return self._pending_decisions.pop(agent_id, None)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
@@ -726,6 +739,15 @@ class TeamBrain:
             }
             expected |= self._interrupted
         return [name for name in expected if name not in self._interrupted]
+
+    def _announce_replans(self) -> None:
+        """Hand the replanned robots to `after_replan`. Holds ``_lock``."""
+        replanned = {
+            name: plan for name, (choice, plan) in self._pending_decisions.items()
+            if choice is InterruptDecision.REPLAN and plan is not None
+        }
+        if replanned:
+            self.after_replan(replanned)
 
     def _decide_interrupts(self, messages: List[Dict]) -> Dict[str, Any]:
         members = [self.members[name] for name in self.member_ids if name in self.members]
@@ -864,6 +886,13 @@ class ChainTeamBrain(TeamBrain):
     def after_plan(self) -> None:
         if self._pending_plans:
             self._say(self._plan_summary(self._pending_plans), "broadcast_chain", interrupts=True)
+
+    def after_replan(self, plans: Dict[str, SymbolicPlan]) -> None:
+        # Same announcement as after_plan, for plans made on the interrupt path.
+        # Without it a chain team could replan and the team after it went on
+        # working against the allocation from the round before -- which is the
+        # one thing this topology exists to prevent.
+        self._say(self._plan_summary(plans), "broadcast_chain", interrupts=True)
 
 
 class LeaderTeamBrain(TeamBrain):

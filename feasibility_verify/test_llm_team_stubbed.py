@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from coop2.cognitive.agent.llm_client import (
     InterruptDecision,
+    LLMPlanResponse,
     LLMTeamInterruptResponse,
     LLMTeamPlanResponse,
     NavigateToAction,
@@ -91,12 +92,23 @@ class StubClient:
         decisions = []
         for name in self._members_in(messages):
             choice = self.interrupt_script.get(name, InterruptDecision.RESUME)
+            # A scripted REPLAN carries a plan, as the model's does: without one
+            # `_decide_interrupts` yields (REPLAN, None) and there is nothing to
+            # announce, so a test of the announcement would pass vacuously.
+            new_plan = None
+            if choice is InterruptDecision.REPLAN:
+                new_plan = LLMPlanResponse(
+                    task=TaskSpecification(task=Task.ONTOP, object_type="apple.n.01_1",
+                                           reference="coffee_table.n.01_1"),
+                    actions=[NavigateToAction(target="apple.n.01_1")],
+                    reasoning=f"{name} was told to change",
+                )
             decisions.append(
                 TeamAgentInterruptDecision(
                     agent_id=name,
                     decision=choice,
                     reasoning="scripted",
-                    new_plan=None,
+                    new_plan=new_plan,
                 )
             )
         return LLMTeamInterruptResponse(decisions=decisions, reasoning="scripted"), dict(USAGE)
@@ -675,6 +687,55 @@ def main() -> int:
     fallback = muted["agent_4"].brain._compose_report()
     assert "in empty_room_0" in fallback and "holding apple.n.01_2" in fallback
     ok("the model writes it from the facts, and a dead model falls back to them")
+
+    print("test 19: a team that replans on interrupt tells the teams it speaks to")
+    # Upstream's handle_interrupt is `self._execute_flow()` -- the same flow as
+    # reasoning, communication included -- so a replan there is announced just
+    # as a fresh plan is. This port decided per robot and said nothing, so a
+    # chain team could replan and the team after it went on working against the
+    # allocation from the round before.
+    client = StubClient()
+    client.interrupt_script = {"agent_0": InterruptDecision.REPLAN}
+    agents = create_llm_team_topology(
+        llm_client=client, topology="broadcast_chain",
+        teams={"team_0": ["agent_0", "agent_1"], "team_1": ["agent_4"]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    for agent in agents.values():
+        agent.symbolic_view = f"view for {agent.agent_id}"
+        agent.observe({}, 0)
+        agent.plan = None
+    broker = MessageBroker(agents)
+    broker.teams = {"team_0": ["agent_0", "agent_1"], "team_1": ["agent_4"]}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    # team_0 plans once so its members have something to replan away from.
+    for name in ("agent_0", "agent_1"):
+        agents[name].handle_reasoning()
+    said_after_plan = len(broker.message_log)
+    assert said_after_plan >= 1, "after_plan should have announced the first allocation"
+
+    for name in ("agent_0", "agent_1"):
+        agents[name]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    broker.send_team_message(
+        sender_team="team_1", recipients=["team_0"], content="we took the east apples",
+        metadata={"type": "broadcast_chain", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    threads = [threading.Thread(target=agents[n].handle_interrupt)
+               for n in ("agent_0", "agent_1")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    assert not any(t.is_alive() for t in threads)
+    announced = [m for m in broker.message_log[said_after_plan + 1:]
+                 if m["sender"] == "team_0"]
+    assert announced, "team_0 replanned on the interrupt and told nobody"
+    assert (announced[-1]["metadata"] or {}).get("type") == "broadcast_chain"
+    assert "agent_0" in str(announced[-1]["content"])
+    ok("the replan goes downstream, the way a fresh plan does")
 
     print("\nALL TESTS PASSED")
     return 0

@@ -183,7 +183,15 @@ class MessageBroker:
             )
             if should_interrupt:
                 before = recipient.state
-                recipient.interrupt(timestamp, env_step)
+                # `time.time()`, not the message's timestamp. That argument is
+                # when the message was composed, on the *sender's* clock, and a
+                # caller may supply it outright; stamping a state transition
+                # with it put the recipient's I entry before transitions that
+                # had already been appended. agent_7 in
+                # centralized_agents8_..._021551 records
+                # [0.0 R] [6.21 W] [0.0022 I], out of order, which the timeline
+                # then draws as interrupted from t=0 to the end of the run.
+                recipient.interrupt(time.time(), env_step)
                 if recipient.state is not before:
                     actually_interrupted.append(recipient_id)
                 # Notify wrapper of state change if available

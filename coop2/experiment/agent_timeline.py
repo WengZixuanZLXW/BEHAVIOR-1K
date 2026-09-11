@@ -99,6 +99,11 @@ def _spans(
     entry step alone reads as "this span cost 0 steps" on the first span of the
     run, which starts at env_step 0 and can run for thousands of ticks.
     """
+    # Sorted, because the history is appended from several threads and one
+    # entry stamped from a foreign clock used to land before transitions that
+    # were already recorded -- which drew as a single span covering the run.
+    # The stamping is fixed at the source; this keeps a future one from lying.
+    transitions = sorted(transitions, key=lambda entry: float(entry[0]))
     spans = []
     for index, entry in enumerate(transitions):
         timestamp, env_step, state = float(entry[0]), int(entry[1]), str(entry[2])
