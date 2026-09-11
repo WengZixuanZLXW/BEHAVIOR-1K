@@ -257,7 +257,11 @@ def main() -> int:
     assert isinstance(central["t1"], FollowerTeamBrain)
     assert central["t0"].wait_for == ["a2", "a4"], "leader waits on follower speakers"
     assert central["t0"].send_to == ["a2", "a3", "a4", "a5"], "leader addresses whole teams"
-    assert central["t1"].wait_for == ["a0"] and central["t1"].send_to == ["a0"]
+    # A follower answers the leader's whole team, not just its speaker: a
+    # message that reaches one member interrupts only that member, which left
+    # the leader team split across I and W and stalled its interrupt barrier.
+    assert central["t1"].wait_for == ["a0"], central["t1"].wait_for
+    assert central["t1"].send_to == ["a0", "a1"], central["t1"].send_to
     ok("individual/chain/centralized wire teams; speakers are waited on, whole teams addressed")
 
     print("test 9: when the team thinks, every member is reasoning")
@@ -271,6 +275,11 @@ def main() -> int:
         agents[name].set_ready()
         agents[name].start_execution()
         assert agents[name].state == AgentState.X, agents[name].state
+
+    # One of them finishes its hold and is sitting ready in W rather than still
+    # executing. It is idling just the same, and was being skipped.
+    agents[ids[0]].set_ready()
+    assert agents[ids[0]].state == AgentState.W, agents[ids[0]].state
 
     # The fourth arrives and closes the barrier.
     agents[ids[3]].handle_reasoning()

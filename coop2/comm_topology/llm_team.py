@@ -188,15 +188,26 @@ class TeamBrain:
             lines.append(f"  From {message.get('sender', 'unknown')}: {message.get('content', '')}")
         return "\n".join(lines)
 
-    def _say(self, content: str, kind: str, interrupts: bool) -> None:
-        """Send @content to every member of the teams this one addresses."""
+    def _say(self, content: str, kind: str, interrupts: bool,
+             expected_reply: bool = False) -> None:
+        """Send @content to every member of the teams this one addresses.
+
+        ``expected_reply`` marks an answer the recipient asked for and is
+        blocked waiting on, which the broker then delivers without interrupting
+        anyone -- see the note there.
+        """
         speaker = self.speaker
         if not self.send_to or speaker is None or speaker.message_broker is None:
             return
         speaker.send_message(
             recipients=list(self.send_to),
             content=content,
-            metadata={"type": kind, "team": self.team_name, "interrupts_execution": interrupts},
+            metadata={
+                "type": kind,
+                "team": self.team_name,
+                "interrupts_execution": interrupts,
+                "expected_reply": expected_reply,
+            },
         )
         if self.verbose:
             print(f"  [{self.team_name}] -> {len(self.send_to)} agents ({kind}): {content[:60]}...")
@@ -302,14 +313,14 @@ class TeamBrain:
             plan = member.plan
             if plan is not None and str(plan.specification).startswith("wait_for_team"):
                 plan.status = SymbolicPlanStatus.INTERRUPTED
-            # 'plan_terminated' is exactly what happened -- the hold above was
-            # just ended -- and it is the reason that transitions X -> R, which
-            # is the state the member should be in while the team thinks. A
-            # member already in W or R is left alone: it is not holding.
+            # Both W and X. A member that finished its hold and is sitting ready
+            # is idling just as much as one still running it, and skipping the W
+            # ones left a robot showing "waiting" while its teammates reasoned.
+            # Members already in R or I are left alone -- they are not idling.
             from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
 
-            if member.state == AgentState.X:
-                member.set_unready(reason="plan_terminated")
+            if member.state in (AgentState.W, AgentState.X):
+                member.set_unready(reason="team_recalled")
 
     def note_hold(self) -> None:
         with self._lock:
@@ -572,7 +583,15 @@ class FollowerTeamBrain(TeamBrain):
 
     def before_plan(self) -> None:
         self._await_speakers()
-        self._say(self._status_report(), "follower_response", interrupts=False)
+        # Not an interrupt in either direction. The leader asked for this and is
+        # blocked in its own planning barrier waiting for it, so interrupting it
+        # is incoherent -- and it cannot even be done uniformly, because the
+        # members inside that barrier are in R and R is not interruptible, so
+        # the team would split. It is delivered and read when the leader plans.
+        self._say(
+            self._status_report(), "follower_response",
+            interrupts=False, expected_reply=True,
+        )
 
     def _status_report(self) -> str:
         parts = []
@@ -744,7 +763,12 @@ def create_llm_team_topology(
         brains[leader].send_to = members_of(followers)
         for name in followers:
             brains[name].wait_for = [speaker_of(leader)]
-            brains[name].send_to = [speaker_of(leader)]
+            # The whole leader team, not just its speaker. Addressing one member
+            # interrupted that member alone: it entered the team interrupt
+            # barrier by itself and sat there for the full timeout waiting for
+            # teammates nothing had interrupted, while they stayed in W. Every
+            # inter-team message addresses a whole team, in both directions.
+            brains[name].send_to = members_of([leader])
 
     for brain in brains.values():
         brain.all_agents = agents

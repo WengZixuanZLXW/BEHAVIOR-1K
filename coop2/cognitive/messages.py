@@ -112,7 +112,16 @@ class MessageBroker:
                 is_repair_message = is_coop2_repair_message(msg_copy)
                 message_type = (metadata or {}).get("type") or (metadata or {}).get("message_type")
                 is_execution_interrupt = bool((metadata or {}).get("interrupts_execution")) or message_type == "leader_broadcast"
-                should_interrupt = (
+                # A reply the recipient explicitly asked for and is already
+                # blocked waiting on is not an interruption. Without this, a
+                # follower team's answer reached a leader team that was mid-plan
+                # and split it: members still in W were interrupted, members in R
+                # (inside their own planning barrier) are never interruptible,
+                # and the interrupted ones then sat in the team interrupt barrier
+                # for its full timeout waiting for teammates that were never
+                # going to arrive.
+                is_expected_reply = bool((metadata or {}).get("expected_reply"))
+                should_interrupt = not is_expected_reply and (
                     recipient.state == AgentState.W
                     or (recipient.state == AgentState.X and (is_repair_message or is_execution_interrupt))
                 )

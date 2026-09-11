@@ -209,6 +209,17 @@ class Agent(ABC):
             if self._state not in [AgentState.W, AgentState.X]:
                 print(f"WARNING [{self.agent_id}]: message_received from invalid state {self._state.value}")
             self._set_state(AgentState.I, timestamp, env_step)
+
+        elif reason == 'team_recalled':
+            # A team that shares one LLM reasons as a unit: when its barrier
+            # closes, every member idling on a hold is pulled back into R so the
+            # whole team is reasoning for the one call. The member may be in X
+            # (still running its hold) or already back in W (hold finished,
+            # waiting) -- both are idling, and leaving the W ones behind is what
+            # left one robot "waiting" while its teammates were reasoning.
+            if self._state not in [AgentState.W, AgentState.X]:
+                print(f"WARNING [{self.agent_id}]: team_recalled from invalid state {self._state.value}")
+            self._set_state(AgentState.R, timestamp, env_step)
         
         else:
             raise ValueError(f"Unknown reason for set_unready: {reason}")
