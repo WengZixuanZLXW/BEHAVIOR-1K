@@ -24,6 +24,7 @@ from coop2.cognitive.action.behavior_action import (  # noqa: E402
     BEHAVIOR_ACTION_TO_PRIMITIVE,
     COMMUNICATION_ACTIONS,
 )
+from coop2.cognitive.agent.base_llm_agent import BaseLLMAgent  # noqa: E402
 from coop2.cognitive.agent.llm_client import LLMAction, Task, TaskSpecification  # noqa: E402
 
 
@@ -92,6 +93,17 @@ def main() -> int:
         assert actions, f"no terminal action for goal {task.value!r}"
         assert actions[0].action_type in l2_verbs, actions[0].action_type
     ok("a plan that states a goal but omits the achieving action gets one appended")
+
+    agent = object.__new__(BaseLLMAgent)
+    agent.plan_count, agent.agent_id, agent.env_step = 3, "agent_0", 1234
+    fallback = agent._generate_fallback_plan()
+    # The fallback is issued where nothing can check it -- the LLM is already
+    # down -- so it is the one plan whose verbs are never model output. It used
+    # to be crafter's move/collect, which the engine answered `invalid` and `do`.
+    assert fallback.actions, "a fallback with no actions freezes the world"
+    for action in fallback.actions:
+        assert action.action_type in l2_verbs or action.action_type in COMMUNICATION_ACTIONS, action.action_type
+    ok("the fallback plan is built from verbs L2 actually has")
 
     print("\nALL TESTS PASSED")
     return 0

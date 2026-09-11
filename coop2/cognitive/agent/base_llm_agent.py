@@ -27,6 +27,12 @@ from .cognitive_agent import (
 )
 from ..plan.plan import SymbolicPlan, SymbolicAction
 
+#: How long a robot holds when the LLM could not be asked. Matches
+#: ``symbolic_contention.DEFAULT_WAIT_TICKS``, kept as its own constant the way
+#: ``llm_team.TEAM_HOLD_TICKS`` is, so the cognitive layer does not import from
+#: behavior_env for a number.
+FALLBACK_WAIT_TICKS = 200
+
 
 class BaseLLMAgent(Agent):
     """
@@ -360,13 +366,25 @@ class BaseLLMAgent(Agent):
         return self.plan
     
     def _generate_fallback_plan(self) -> SymbolicPlan:
-        """Generate a simple fallback plan when LLM fails."""
+        """Hold position when the LLM could not be asked.
+
+        The plan has to *do* something: the loop does not step the env while any
+        agent is not ready, so a robot without a plan freezes the world for
+        everyone. Waiting is the only safe thing it can do -- it knows nothing
+        new, and the round trip that would have told it something is the thing
+        that just failed.
+
+        This used to be crafter's ``move(left, 2)`` then ``collect(wood)``,
+        carried over with the port. Neither verb exists here, so the engine
+        answered `invalid` and `do`: the four robots of team_1 in
+        individual_agents12_..._060731 each got that plan after one LLM call
+        blew its 128k reasoning-token budget, and each burned a failed plan on
+        it. One wait instead, after which the agent returns to R and asks again
+        -- by then the world has moved, so it is a genuinely new question.
+        """
         return SymbolicPlan(
-            specification="Fallback exploration",
-            actions=[
-                SymbolicAction("move", {"direction": "left", "num_steps": 2}),
-                SymbolicAction("collect", {"target": "wood"}),
-            ],
+            specification="Hold position (LLM unavailable)",
+            actions=[SymbolicAction("wait", {"ticks": FALLBACK_WAIT_TICKS})],
             plan_id=self.plan_count + 1,
             agent_id=self.agent_id,
             created_at_step=self.env_step
