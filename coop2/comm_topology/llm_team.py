@@ -66,7 +66,7 @@ from coop2.cognitive.agent import LLMClient
 from coop2.cognitive.agent.base_llm_agent import BaseLLMAgent
 from coop2.cognitive.agent.cognitive_agent import parse_plan_response
 from coop2.cognitive.agent.llm_client import InterruptDecision
-from coop2.cognitive.agent.prompts import build_system_prompt
+from coop2.cognitive.agent.prompts import build_team_system_prompt
 from coop2.cognitive.action.action import SymbolicAction
 from coop2.cognitive.plan import SymbolicPlan
 
@@ -81,19 +81,21 @@ __all__ = [
 ]
 
 
+#: Appended to the team system prompt. Only what the world description cannot
+#: say: these are properties of being asked as a team, not of the house.
 TEAM_ROLE = """
 ## Your Role: TEAM CONTROLLER
-You control {n} robots at once. You are given every robot's own observation and
-you answer with one plan per robot, in the same call.
+You are given all {n} robots' observations in one call and answer with one plan
+per robot, in that same call.
 
 - Divide the work. Two robots sent to the same object waste one of them: the
   loser burns the whole trip and its grasp fails with OBJECT_CLAIMED.
-- Each robot only sees the room it is standing in, and the ids it may use are
-  the ones listed under that robot's own "You can do:". A target one robot can
-  see is not necessarily reachable by another.
-- The robots start their plans together and you are not asked again until every
-  one of them has finished. A robot that finishes early holds position and does
-  nothing useful, so plans of wildly different lengths waste the short ones.
+- Your robots start their plans together and you are not asked again until
+  every one of them has finished. A robot that finishes early holds position
+  and does nothing useful, so plans of wildly different lengths waste the
+  short ones.
+- Other teams are driven by their own controllers, not by you. You coordinate
+  with them only through the messages quoted in this prompt.
 """
 
 #: Ticks a member holds for while it waits for the rest of the team. Short
@@ -105,6 +107,17 @@ TEAM_HOLD_TICKS = 60
 #: too. Generous because it should never be reached: the broker interrupts every
 #: member of a team in the same call, so they arrive within milliseconds.
 INTERRUPT_BARRIER_TIMEOUT = 30.0
+
+#: How long a member waits in R for a team call that is already under way,
+#: before giving up and holding. Long, because it is bounding an LLM call that
+#: nothing else can rescue, and the alternative to waiting is showing this robot
+#: as idle through its own team's decision.
+TEAM_PLAN_WAIT_TIMEOUT = 120.0
+
+#: How long the closing member waits for a teammate that has committed to a hold
+#: to actually reach W, so it can be recalled. Bounded and short: the gap it
+#: covers is the microseconds between deciding to hold and going ready.
+COMMITTED_HOLD_SETTLE = 1.0
 
 
 class TeamBrain:
@@ -139,21 +152,37 @@ class TeamBrain:
         self._awaiting: set = set()
         #: Plans produced by the last team call, drained by their owners.
         self._pending_plans: Dict[str, SymbolicPlan] = {}
+        #: Members that have been told they may hold this round and have not yet
+        #: been recalled. Recorded under the lock at the moment the decision is
+        #: made, which is what lets the recall find a member that is still on
+        #: its way to W -- see ``_recall_holders``.
+        self._committed: set = set()
         self._pending_decisions: Dict[str, Any] = {}
         self._interrupted: set = set()
         #: Set once a round's decisions exist, so members blocked in I wake up.
         self._decided = threading.Event()
         self.rounds = 0
         self.holds = 0
-        #: Topology wiring, in agent ids. ``wait_for`` holds the *spokesagents*
-        #: of the teams this one waits on; ``send_to`` holds **every member** of
-        #: the teams it addresses, so a message interrupts a whole team.
+        #: Topology wiring, in **team names** on both sides. A team is the unit
+        #: that speaks and is spoken to, so the wiring says so: "team_0 ->
+        #: team_1", not "team_0 -> agent_4, agent_5, agent_6, agent_7". The
+        #: broker expands a team into its robots at delivery time, because a
+        #: team's inbox is the union of its robots' -- but that is delivery,
+        #: not addressing, and the two were conflated.
         self.wait_for: List[str] = []
         self.send_to: List[str] = []
+        #: Every team in the run, so a brain can resolve the teams it is wired
+        #: to into the robots whose readiness it has to check.
+        self.all_teams: Dict[str, List[str]] = {}
         #: Every agent in the run, for the readiness check the ordering uses.
         self.all_agents: Dict[str, Any] = {}
         #: What this team heard since it last planned, folded into its prompt.
         self._heard: List[Dict] = []
+        #: When the team itself was thinking. Recorded first-hand: the team is
+        #: the thing that thinks here, and only it knows when it started. (Its
+        #: messages need no such record -- addressed as a team, they are already
+        #: team-to-team in the broker's log.)
+        self.timeline: List[Dict] = []
 
     @property
     def speaker(self) -> Optional["LLMTeamAgent"]:
@@ -172,12 +201,30 @@ class TeamBrain:
         """Communication that follows from the plan. Default: none."""
 
     def _collect_heard(self) -> None:
-        """Drain every member's inbox into the team's shared record."""
+        """Drain every member's inbox into the team's shared record.
+
+        Safe to call more than once in a round: draining is destructive, so the
+        second call simply finds nothing, and what the first call took is still
+        in ``_heard`` for the prompt.
+        """
+        seen = {
+            (m.get("sender"), m.get("timestamp"), str(m.get("content")))
+            for m in self._heard
+        }
         for name in self.member_ids:
             member = self.members.get(name)
             if member is None:
                 continue
             for message in member.get_messages(clear_buffer=True) or []:
+                # One message to the team, not one per robot. Delivery copies it
+                # into every member's inbox -- an interrupt has to stop all of
+                # them -- so draining four inboxes yields the same message four
+                # times, and the prompt quoted it four times.
+                key = (message.get("sender"), message.get("timestamp"),
+                       str(message.get("content")))
+                if key in seen:
+                    continue
+                seen.add(key)
                 self._heard.append(message)
 
     def _heard_block(self) -> str:
@@ -196,37 +243,74 @@ class TeamBrain:
         blocked waiting on, which the broker then delivers without interrupting
         anyone -- see the note there.
         """
-        speaker = self.speaker
-        if not self.send_to or speaker is None or speaker.message_broker is None:
+        broker = self._broker()
+        if not self.send_to or broker is None:
             return
-        speaker.send_message(
+        broker.send_team_message(
+            sender_team=self.team_name,
             recipients=list(self.send_to),
             content=content,
             metadata={
                 "type": kind,
-                "team": self.team_name,
                 "interrupts_execution": interrupts,
                 "expected_reply": expected_reply,
             },
         )
         if self.verbose:
-            print(f"  [{self.team_name}] -> {len(self.send_to)} agents ({kind}): {content[:60]}...")
+            print(f"  [{self.team_name}] -> {self.send_to} ({kind}): {content[:60]}...")
+
+    def _broker(self):
+        """The message broker, with every team declared on it.
+
+        Registration happens here rather than at construction because the broker
+        is attached to the agents by the environment, after the topology is
+        built. All teams are declared at once, not just this one: a team has to
+        be known before it can be addressed, and the first team to speak would
+        otherwise be addressing teams the broker had never heard of.
+        """
+        speaker = self.speaker
+        broker = speaker.message_broker if speaker is not None else None
+        if broker is None:
+            return None
+        for name, members in (self.all_teams or {self.team_name: self.member_ids}).items():
+            if name not in broker.teams:
+                broker.register_team(name, members)
+        return broker
+
+    def _members_of(self, team_names) -> List[str]:
+        """The robots behind @team_names."""
+        return [member for name in team_names for member in self.all_teams.get(name, [])]
 
     def _await_speakers(self, timeout: float = 30.0) -> None:
         """Block until the teams this one waits on have spoken, or committed."""
         speaker = self.speaker
         if speaker is None or not self.wait_for:
             return
-        if not speaker._any_waiting_agent_not_ready(self.all_agents, self.wait_for):
+        if self._heard_from(self.wait_for):
+            # Already in hand: the brain collects every member's inbox before
+            # the hooks run, so by here the message it is waiting for may have
+            # been taken off the buffer `wait_for_messages_from` inspects.
+            # Without this the team waits out the full timeout for something it
+            # is already holding.
+            return
+        # Readiness is still per robot -- it is robots that execute -- so the
+        # teams waited on are resolved to their members here. The wait itself is
+        # on the *team* having spoken.
+        upstream = self._members_of(self.wait_for)
+        if not speaker._any_waiting_agent_not_ready(self.all_agents, upstream):
             return
         deadline = time.monotonic() + timeout
         while not speaker.wait_for_messages_from(self.wait_for):
-            if not speaker._any_waiting_agent_not_ready(self.all_agents, self.wait_for):
+            if not speaker._any_waiting_agent_not_ready(self.all_agents, upstream):
                 break
             if time.monotonic() >= deadline:
                 print(f"  [{self.team_name}] waited {timeout:.0f}s for {self.wait_for}; releasing")
                 break
             time.sleep(0.05)
+
+    def _heard_from(self, senders) -> bool:
+        """Has anything from @senders reached the team this round?"""
+        return any(message.get("sender") in set(senders) for message in self._heard)
 
     def _plan_summary(self, plans: Dict[str, SymbolicPlan]) -> str:
         """One line per robot, for telling another team what this one will do."""
@@ -272,12 +356,17 @@ class TeamBrain:
             # communication brackets that call: whoever this team waits on has
             # to have spoken before it plans, and whatever it tells other teams
             # follows from the plan it just made.
-            self.before_plan()
+            started = time.time()
             self._collect_heard()
+            self.before_plan()
             self._pending_plans = self._generate_team_plans()
             self.rounds += 1
             self.after_plan()
             self._heard = []
+            self._committed.clear()
+            self.timeline.append(
+                {"kind": "planning", "start": started, "end": time.time()}
+            )
             self._awaiting.discard(agent_id)
             return self._pending_plans.pop(agent_id, None)
 
@@ -302,6 +391,7 @@ class TeamBrain:
         (``_reset_symbolic_action_state``), which is the same path an
         interrupt-and-replan already takes.
         """
+        from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
         from coop2.cognitive.plan.plan import SymbolicPlanStatus  # noqa: PLC0415
 
         for name in self.member_ids:
@@ -310,6 +400,18 @@ class TeamBrain:
             member = self.members.get(name)
             if member is None:
                 continue
+            if name in self._committed:
+                # It was told it could hold and is between that decision and
+                # actually going ready -- microseconds, but a real gap: it is
+                # still in R, which the check below deliberately leaves alone,
+                # and it would then sit in W through the whole call. Measured at
+                # 10.9 s of "waiting" for agent_5 while its three teammates
+                # reasoned. Wait for it to land rather than miss it; the call
+                # this recall precedes takes seconds, so this costs nothing.
+                settle = time.monotonic() + COMMITTED_HOLD_SETTLE
+                while member.state == AgentState.R and time.monotonic() < settle:
+                    time.sleep(0.001)
+                self._committed.discard(name)
             plan = member.plan
             if plan is not None and str(plan.specification).startswith("wait_for_team"):
                 plan.status = SymbolicPlanStatus.INTERRUPTED
@@ -317,14 +419,65 @@ class TeamBrain:
             # is idling just as much as one still running it, and skipping the W
             # ones left a robot showing "waiting" while its teammates reasoned.
             # Members already in R or I are left alone -- they are not idling.
-            from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
-
             if member.state in (AgentState.W, AgentState.X):
                 member.set_unready(reason="team_recalled")
 
-    def note_hold(self) -> None:
+    def claim_pending_plan(self, agent_id: str) -> Optional[SymbolicPlan]:
+        """Wait for this round's plan if the team is complete; else None.
+
+        Closes a race the recall cannot. ``request_plan`` returns None and the
+        caller then decides to hold; if the last teammate arrives in that gap,
+        the recall finds this member in R -- which it deliberately leaves alone,
+        R not being an idle state -- and the member then goes ready with a hold
+        and sits in W through its own team's call. Measured at 15.8 s of
+        "waiting" against 15.8 s of "reasoning" for its teammates.
+
+        Asking once is not enough: the recall happens *before* the call, so at
+        that moment there is no plan to hand back yet. What settles it is
+        whether the team is complete. If it is, someone is about to make the
+        call or is making it, so this member waits for the result -- in R, where
+        it belongs, and safely: the world being frozen is what the whole team is
+        waiting on anyway, and the call needs no simulation. If it is not, the
+        member really does have teammates still working, and holds.
+        """
         with self._lock:
-            self.holds += 1
+            if agent_id in self._pending_plans:
+                self._awaiting.discard(agent_id)
+                return self._pending_plans.pop(agent_id)
+            if not self._awaiting.issuperset(self.member_ids):
+                # Teammates really are still working. Commit to the hold here,
+                # inside the lock, so that a teammate arriving a moment later
+                # cannot close the barrier without knowing this member is on its
+                # way to W.
+                self._committed.add(agent_id)
+                # Counted here rather than by a separate note_hold() call: that
+                # call took this same lock, so a member commiting to a hold
+                # would have blocked on the closer that is spinning for it to
+                # reach W -- the two waiting on each other for the full settle.
+                self.holds += 1
+                return None
+            # The round this member is waiting to see finish. Counting rounds
+            # rather than looking for an empty _pending_plans is what separates
+            # "the call has not started" from "the call finished without me".
+            started_at = self.rounds
+
+        deadline = time.monotonic() + TEAM_PLAN_WAIT_TIMEOUT
+        while True:
+            # Blocking on the lock is most of the wait: whoever closed the
+            # barrier holds it for the whole LLM call.
+            with self._lock:
+                if agent_id in self._pending_plans:
+                    self._awaiting.discard(agent_id)
+                    return self._pending_plans.pop(agent_id)
+                if self.rounds != started_at:
+                    # The call happened and had nothing for this member, which
+                    # _generate_team_plans has already covered with a hold.
+                    return None
+            if time.monotonic() >= deadline:
+                print(f"  [{self.team_name}] {agent_id} waited "
+                      f"{TEAM_PLAN_WAIT_TIMEOUT:.0f}s for the team plan; holding")
+                return None
+            time.sleep(0.01)
 
     def _generate_team_plans(self) -> Dict[str, SymbolicPlan]:
         """One LLM call, one plan per member. Never raises."""
@@ -397,7 +550,11 @@ class TeamBrain:
             self._interrupted.add(agent_id)
             complete = self._interrupted.issuperset(self.member_ids)
             if complete:
+                started = time.time()
                 self._pending_decisions = self._decide_interrupts(messages)
+                self.timeline.append(
+                    {"kind": "deciding", "start": started, "end": time.time()}
+                )
                 self._decided.set()
                 self._interrupted.discard(agent_id)
                 return self._pending_decisions.pop(agent_id, None)
@@ -467,7 +624,11 @@ class TeamBrain:
     # -- prompts -----------------------------------------------------------
 
     def _system_prompt(self, anchor: "LLMTeamAgent") -> str:
-        base = build_system_prompt(self.team_name, max_actions=6, include_env_description=True)
+        base = build_team_system_prompt(
+            self.team_name,
+            [name for name in self.member_ids if name in self.members],
+            max_actions=6,
+        )
         return base + "\n\n" + TEAM_ROLE.format(n=self.size).strip()
 
     def _member_block(self, member: "LLMTeamAgent") -> str:
@@ -582,7 +743,19 @@ class FollowerTeamBrain(TeamBrain):
     """
 
     def before_plan(self) -> None:
-        self._await_speakers()
+        if not self._was_asked():
+            self._await_speakers()
+            self._collect_heard()
+        if not self._was_asked():
+            # No request this round, so there is nothing to answer. Replying
+            # anyway is what put a follower_response on the wire in the same
+            # instant as -- and sometimes before -- the leader's request:
+            # `_await_speakers` gives up as soon as the leader merely *looks*
+            # ready, which at the start of a run it does. That escape cannot be
+            # removed (a follower blocked in R freezes the world, and the leader
+            # needs the world to advance before it plans and asks), so the fix
+            # is to stay silent rather than to answer a question nobody asked.
+            return
         # Not an interrupt in either direction. The leader asked for this and is
         # blocked in its own planning barrier waiting for it, so interrupting it
         # is incoherent -- and it cannot even be done uniformly, because the
@@ -591,6 +764,13 @@ class FollowerTeamBrain(TeamBrain):
         self._say(
             self._status_report(), "follower_response",
             interrupts=False, expected_reply=True,
+        )
+
+    def _was_asked(self) -> bool:
+        """Did a leader request actually arrive this round?"""
+        return any(
+            (message.get("metadata") or {}).get("type") == "leader_broadcast"
+            for message in self._heard
         )
 
     def _status_report(self) -> str:
@@ -645,12 +825,21 @@ class LLMTeamAgent(BaseLLMAgent):
 
     def handle_reasoning(self):
         """Take the team's plan, or hold position until the team is complete."""
-        self.get_messages(clear_buffer=True)
+        # The inbox is *not* cleared here. It belongs to the team: the brain
+        # drains every member's buffer into one shared record when the barrier
+        # closes, and folds it into the prompt. Clearing here discarded the
+        # leader's planning request before the team could read it -- the
+        # follower then had nothing to answer and waited out the full timeout
+        # for a message that had already arrived and been thrown away.
         plan = self.brain.request_plan(self.agent_id)
+        if plan is None:
+            plan = self.brain.claim_pending_plan(self.agent_id)
         if plan is None:
             # Teammates are still executing. Staying not-ready here would freeze
             # the world and they would never finish -- see the module docstring.
-            self.brain.note_hold()
+            # Nothing below may touch the brain: it has already been told this
+            # member is holding, and it may be spinning on this member reaching
+            # W, so taking its lock here would have both wait on the other.
             if self.verbose:
                 print(f"  [{self.agent_id}] holding {TEAM_HOLD_TICKS} ticks for the team")
             plan = self.build_hold_plan()
@@ -743,36 +932,31 @@ def create_llm_team_topology(
                 goal_instruction=goal_instruction,
             )
 
-    # Wiring, in agent ids: a team is *addressed* as a whole (every member, so
-    # the interrupt reaches all of it) but *speaks* through its first member,
-    # because the broker and the ordering primitives are keyed by agent id.
-    def speaker_of(team_name: str) -> str:
-        return teams[team_name][0]
-
-    def members_of(team_names) -> List[str]:
-        return [agent_id for name in team_names for agent_id in teams[name]]
-
+    # Wiring, in team names on both sides: teams are what talk to each other
+    # here. Delivery still reaches every robot of an addressed team -- an
+    # interrupt has to stop all of it -- but that expansion belongs to the
+    # broker, not to the address.
     if topology == "broadcast_chain":
         for index, team_name in enumerate(names):
             brain = brains[team_name]
-            brain.wait_for = [speaker_of(names[index - 1])] if index > 0 else []
-            brain.send_to = members_of(names[index + 1:])
+            brain.wait_for = [names[index - 1]] if index > 0 else []
+            brain.send_to = list(names[index + 1:])
     elif topology == "centralized":
         leader, followers = names[0], names[1:]
-        brains[leader].wait_for = [speaker_of(name) for name in followers]
-        brains[leader].send_to = members_of(followers)
+        brains[leader].wait_for = list(followers)
+        brains[leader].send_to = list(followers)
         for name in followers:
-            brains[name].wait_for = [speaker_of(leader)]
-            # The whole leader team, not just its speaker. Addressing one member
-            # interrupted that member alone: it entered the team interrupt
-            # barrier by itself and sat there for the full timeout waiting for
-            # teammates nothing had interrupted, while they stayed in W. Every
-            # inter-team message addresses a whole team, in both directions.
-            brains[name].send_to = members_of([leader])
+            brains[name].wait_for = [leader]
+            brains[name].send_to = [leader]
 
     for brain in brains.values():
         brain.all_agents = agents
+        brain.all_teams = {name: list(teams[name]) for name in names}
     for agent in agents.values():
+        # Mirrors of the brain's wiring, in team names. Nothing in the team path
+        # reads them -- the brain does all the waiting and sending -- but they
+        # are what an inspector reaches for first, and holding a stale agent-id
+        # copy of a team-level wiring would be worse than holding none.
         agent.wait_for = list(agent.brain.wait_for)
         agent.send_to = list(agent.brain.send_to)
     return agents

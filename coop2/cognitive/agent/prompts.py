@@ -55,6 +55,51 @@ Read the failure reason before replanning -- it tells you whether to wait,
 approach, or pick a different target."""
 
 
+#: The same world, described to a controller that drives several robots at once
+#: rather than to one robot. Not generated from ENV_DESCRIPTION by swapping
+#: pronouns: the two differ in substance as well as person -- a team controller
+#: has to allocate between robots, and is told what that costs. The shared rules
+#: (TOO_FAR, unreachable, exclusivity, id discipline) must stay in step, and
+#: test_team_prompt_stubbed.py fails if one of them is edited out of either.
+TEAM_ENV_DESCRIPTION = """You command a team of robots in a house, alongside other teams doing the same.
+
+Your robots act through high-level primitives, not joint commands. Each one
+takes many simulation steps: driving across a room costs 60 ticks per metre, so
+distance is the main cost you control. None of them can see -- each is given a
+symbolic description of the room it is standing in, and only that room, and
+those descriptions are listed below one robot at a time.
+
+Rules that decide whether an action succeeds:
+- To grasp, place, open or toggle an object a robot must be closer to it than
+  that object's own distance threshold; beyond it the action fails with TOO_FAR.
+  Under a robot's "You can do:" a distance in metres is shown ONLY for objects
+  that are currently out of range -- no distance means that robot is already
+  close enough to act on it now.
+- An out-of-range object is marked "unreachable" and offers navigate_to and
+  NOTHING else. No robot can grasp, place, open or toggle an unreachable
+  object, however close it looks in the room listing: it must navigate_to it
+  first.
+- If a robot has nothing useful to do right now -- another robot is already
+  handling the only target it could work on, or it is waiting on something to
+  finish -- give it wait rather than acting anyway. wait holds its position for
+  the number of ticks you give it, during which the others make progress.
+- One object at a time per robot: grasp needs an empty gripper, place needs a
+  full one.
+- Objects are exclusive, including between your own robots. If anyone is
+  holding something, a grasp for it fails with "held by <agent>". Sending two
+  robots after one target costs the loser the whole trip for nothing.
+- Refer to objects only by the ids listed under that robot's own "You can do:",
+  which are the objects in the room it is standing in. They look like
+  apple.n.01_1. Never invent one, and never give one robot an id that appeared
+  only under another robot -- it is in a room that robot cannot see.
+- An entry marked "blocked" is in that room but currently unavailable -- the
+  bracketed note says why.
+
+When an action fails, that robot's plan is abandoned. You are told the failure
+reason the next time you are asked -- read it before replanning: it tells you
+whether that robot should wait, approach, or pick a different target."""
+
+
 def get_env_description() -> str:
     """Get the environment description."""
     return ENV_DESCRIPTION
@@ -455,6 +500,37 @@ def format_coop2_repair_instruction(messages: Optional[List[Dict]]) -> str:
 # ============================================================================
 # Complete Prompt Building
 # ============================================================================
+
+def build_team_system_prompt(
+    team_name: str,
+    member_ids: List[str],
+    max_actions: int = 6,
+) -> str:
+    """System prompt for the one LLM that drives a whole team.
+
+    Distinct from ``build_system_prompt`` in person and in task: that one tells
+    a model it *is* a robot and asks for one plan, which is the wrong framing
+    for a caller that receives four observations and must answer with four
+    plans. It was being used for teams with the team's name in the robot slot,
+    so the prompt opened by calling team_0 a robot and then asked it for a
+    single plan.
+    """
+    robots = ", ".join(member_ids)
+    return "\n".join([
+        f"You command TEAM '{team_name}' -- {len(member_ids)} robots "
+        f"({robots}) -- in a multi-agent cooperative household task.",
+        "",
+        TEAM_ENV_DESCRIPTION,
+        "",
+        f"""PLAN RESPONSE:
+- Return a structured plan for EVERY robot listed above, one each, tagged with
+  that robot's agent_id.
+- Give each robot one task and at most {max_actions} actions; 3-6 short
+  executable actions are usually enough.
+- Use exact item_id values from that robot's own section of the prompt.
+- Say in the team-level `reasoning` how you divided the work between them.""",
+    ])
+
 
 def build_system_prompt(
     agent_id: str,

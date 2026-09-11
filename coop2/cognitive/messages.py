@@ -26,13 +26,162 @@ class MessageBroker:
             agents: Dict mapping agent_id to Agent instances
         """
         self.agents = agents
-        
+
+        #: Declared teams, ``{team name: [member ids]}``. A team is an address
+        #: in its own right: one LLM drives all of a team's robots, so what is
+        #: said is said by the team and to the team, and it is delivered to
+        #: every member because they are all ears of the same listener.
+        self.teams: Dict[str, List[str]] = {}
+
         # Track all messages for analysis
         self.message_log = []
         
         # Optional wrapper reference for state change notifications
         self.wrapper = None
     
+    def _deliver(self, message_record: Dict, recipient_ids: List[str],
+                 timestamp: float, env_step: Optional[int]) -> None:
+        """Put @message_record in each recipient's buffer, interrupting if due.
+
+        Shared by the agent-addressed and team-addressed paths: the address
+        changes, the delivery does not. ``message_record['sender']`` is whoever
+        spoke -- an agent id on one path, a team name on the other -- and that
+        is what the recipient sees and what its ordering primitives match on.
+        """
+        sender = message_record['sender']
+        content = message_record['content']
+        metadata = message_record.get('metadata') or {}
+        for recipient_id in recipient_ids:
+            recipient = self.agents.get(recipient_id)
+            if recipient is None:
+                continue
+            msg_copy = {
+                'timestamp': message_record['timestamp'],
+                'env_step': env_step,
+                'sender': sender,
+                'content': content,
+                'metadata': metadata,
+            }
+            recipient.message_buffer.append(msg_copy)
+            recipient.message_history.append(msg_copy)
+
+            # Record incoming message to agent's memory
+            recipient.memory.record_message_in(
+                sender=sender,
+                recipients=message_record['recipients'],
+                content=content,
+                timestamp=timestamp,
+                env_step=env_step,
+            )
+
+            # Update buffer sender indicator
+            recipient.buffer_senders[sender] = True
+
+            # Interrupt waiting agents for ordinary communication so topology
+            # protocols can still coordinate before execution. Once an agent
+            # is executing, ordinary messages are buffered for the next
+            # reasoning point unless the sender marks the message as an
+            # execution interrupt, such as COOP2 repair or centralized
+            # leader planning broadcasts.
+            from .agent import AgentState
+            is_repair_message = is_coop2_repair_message(msg_copy)
+            message_type = metadata.get("type") or metadata.get("message_type")
+            is_execution_interrupt = (
+                bool(metadata.get("interrupts_execution")) or message_type == "leader_broadcast"
+            )
+            # A reply the recipient explicitly asked for and is already
+            # blocked waiting on is not an interruption. Without this, a
+            # follower team's answer reached a leader team that was mid-plan
+            # and split it: members still in W were interrupted, members in R
+            # (inside their own planning barrier) are never interruptible,
+            # and the interrupted ones then sat in the team interrupt barrier
+            # for its full timeout waiting for teammates that were never
+            # going to arrive.
+            is_expected_reply = bool(metadata.get("expected_reply"))
+            should_interrupt = not is_expected_reply and (
+                recipient.state == AgentState.W
+                or (recipient.state == AgentState.X and (is_repair_message or is_execution_interrupt))
+            )
+            if should_interrupt:
+                recipient.interrupt(timestamp, env_step)
+                # Notify wrapper of state change if available
+                if self.wrapper is not None:
+                    self.wrapper.notify_state_change()
+
+    def register_team(self, team_name: str, member_ids: List[str]) -> None:
+        """Declare @team_name as an addressable unit made of @member_ids."""
+        self.teams[team_name] = list(member_ids)
+
+    def members_of(self, team_name: str) -> List[str]:
+        """The robots @team_name speaks and listens through."""
+        return list(self.teams.get(team_name, []))
+
+    def team_of(self, agent_id: str) -> Optional[str]:
+        """The team @agent_id belongs to, if any."""
+        for name, members in self.teams.items():
+            if agent_id in members:
+                return name
+        return None
+
+    def send_team_message(self, sender_team: str, recipients: Union[str, List[str]],
+                          content: Any, metadata: Optional[Dict] = None,
+                          timestamp: Optional[float] = None,
+                          env_step: Optional[int] = None):
+        """Send from one team to whole teams.
+
+        Addressed in team names throughout -- the sender is the team, and so is
+        every recipient. Addressing the members instead ("team_0 -> agent_4,
+        agent_5, agent_6, agent_7") made a four-robot conversation look like
+        eight separate ones and left no record of who actually spoke, since the
+        robot whose id carried the message had no part in composing it.
+
+        Delivery still reaches every member, because a team's inbox is the union
+        of its robots' inboxes and an interrupt has to stop all of it.
+        """
+        if timestamp is None:
+            timestamp = time.time()
+        if isinstance(recipients, str):
+            recipient_teams = (
+                [t for t in self.teams if t != sender_team] if recipients == "all"
+                else [recipients]
+            )
+        else:
+            recipient_teams = list(recipients)
+
+        recipient_agents = [
+            agent_id for team in recipient_teams for agent_id in self.members_of(team)
+        ]
+        if env_step is None:
+            for agent_id in self.members_of(sender_team):
+                agent = self.agents.get(agent_id)
+                if agent is not None:
+                    env_step = agent.env_step
+                    break
+
+        message_record = {
+            'timestamp': self._relative(timestamp, self.members_of(sender_team)),
+            'env_step': env_step,
+            'sender': sender_team,
+            'sender_type': 'team',
+            'recipients': recipient_teams,
+            # Which robots it actually reached. Kept for debugging delivery; the
+            # conversation itself is the line above.
+            'delivered_to': recipient_agents,
+            'content': content,
+            'metadata': metadata or {},
+        }
+        self._deliver(message_record, recipient_agents, timestamp, env_step)
+        self.message_log.append(message_record)
+        return message_record
+
+    def _relative(self, timestamp: float, agent_ids: List[str]) -> float:
+        """@timestamp on the clock the agent state logs use."""
+        for agent_id in agent_ids:
+            agent = self.agents.get(agent_id)
+            if agent is not None:
+                return timestamp - agent._start_time
+        return timestamp
+
     def send_message(self, sender_id: str, recipients: Union[str, List[str]], 
                     content: Any, metadata: Optional[Dict] = None,
                     timestamp: Optional[float] = None, env_step: Optional[int] = None):
@@ -76,60 +225,7 @@ class MessageBroker:
             'metadata': metadata or {}
         }
         
-        # Deliver to each recipient's buffer and history
-        for recipient_id in recipient_list:
-            if recipient_id in self.agents and self.agents[recipient_id] is not None:
-                recipient = self.agents[recipient_id]
-                msg_copy = {
-                    'timestamp': relative_timestamp,
-                    'env_step': env_step,
-                    'sender': sender_id,
-                    'content': content,
-                    'metadata': metadata or {}
-                }
-                recipient.message_buffer.append(msg_copy)
-                recipient.message_history.append(msg_copy)
-                
-                # Record incoming message to agent's memory
-                recipient.memory.record_message_in(
-                    sender=sender_id,
-                    recipients=recipient_list,
-                    content=content,
-                    timestamp=timestamp,
-                    env_step=env_step
-                )
-                
-                # Update buffer sender indicator
-                recipient.buffer_senders[sender_id] = True
-                
-                # Interrupt waiting agents for ordinary communication so topology
-                # protocols can still coordinate before execution. Once an agent
-                # is executing, ordinary messages are buffered for the next
-                # reasoning point unless the sender marks the message as an
-                # execution interrupt, such as COOP2 repair or centralized
-                # leader planning broadcasts.
-                from .agent import AgentState
-                is_repair_message = is_coop2_repair_message(msg_copy)
-                message_type = (metadata or {}).get("type") or (metadata or {}).get("message_type")
-                is_execution_interrupt = bool((metadata or {}).get("interrupts_execution")) or message_type == "leader_broadcast"
-                # A reply the recipient explicitly asked for and is already
-                # blocked waiting on is not an interruption. Without this, a
-                # follower team's answer reached a leader team that was mid-plan
-                # and split it: members still in W were interrupted, members in R
-                # (inside their own planning barrier) are never interruptible,
-                # and the interrupted ones then sat in the team interrupt barrier
-                # for its full timeout waiting for teammates that were never
-                # going to arrive.
-                is_expected_reply = bool((metadata or {}).get("expected_reply"))
-                should_interrupt = not is_expected_reply and (
-                    recipient.state == AgentState.W
-                    or (recipient.state == AgentState.X and (is_repair_message or is_execution_interrupt))
-                )
-                if should_interrupt:
-                    recipient.interrupt(timestamp, env_step)
-                    # Notify wrapper of state change if available
-                    if self.wrapper is not None:
-                        self.wrapper.notify_state_change()
+        self._deliver(message_record, recipient_list, timestamp, env_step)
         
         # Log the message
         self.message_log.append(message_record)

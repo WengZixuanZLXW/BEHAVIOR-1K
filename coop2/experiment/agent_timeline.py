@@ -3,8 +3,13 @@
 Replaces metrics_timeline.png, which plotted constraint counters this project
 does not use.
 
-Inter-agent messages are overlaid as arrows from the sender's lane to each
-recipient's, at the moment they were sent. Content is deliberately not drawn --
+Messages are overlaid as arrows from the sender's lane to each recipient's, at
+the moment they were sent. Under a team topology the sender and the recipient
+are *teams*, so each team gets a lane of its own above its robots and the arrow
+runs between those lanes. Drawing it from a member's lane instead -- the team's
+first robot standing in for all four -- claimed that robot sent something it had
+no part in, and put the arrowhead on one recipient robot when the message
+interrupts four. Content is deliberately not drawn --
 the question this figure answers is *when* an agent talked and *to whom*, which
 is what ties a frozen world (the I and R spans) to the thing that froze it. The
 message clock and the state clock are both seconds since the run started, so
@@ -23,7 +28,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
-__all__ = ["plot_agent_state_timeline"]
+__all__ = ["plot_agent_state_timeline", "save_team_timeline"]
 
 #: FSM state -> colour. Deliberately loud for R and I: those are the spans that
 #: stop every other agent.
@@ -38,6 +43,15 @@ STATE_COLOURS = {
 #: direction, and colouring by metadata["type"] would compete with the state
 #: colours for the reader's attention.
 MESSAGE_COLOUR = "#22223b"
+
+#: What a team lane shows. A team is either thinking -- which freezes the world
+#: for everyone, so it takes the same loud colours as the member states that
+#: freeze it -- or it is not, and its robots are acting on what it last decided.
+TEAM_SPAN_COLOURS = {
+    "planning": STATE_COLOURS["reasoning"],
+    "deciding": STATE_COLOURS["interrupted"],
+}
+TEAM_IDLE_COLOUR = "#e9ecef"
 
 
 def _coalesce(spans, min_width: float):
@@ -112,11 +126,13 @@ def _step_label(first: int, last: int) -> str:
 def _draw_messages(axes, messages, lane_of, end_time) -> int:
     """Overlay sender -> recipient arrows. Returns how many were drawn.
 
-    One arrow per (message, recipient), so a leader's broadcast to eight
-    followers is eight arrowheads leaving one point -- which is the shape of the
-    cost, and reads correctly at a glance. Slightly curved so that several
-    messages exchanged at almost the same instant do not collapse into a single
-    vertical stroke.
+    One arrow per (message, recipient). ``lane_of`` holds whatever can be
+    addressed in this run: team lanes where the topology talks team to team,
+    agent lanes for anything sent by a single robot (COOP2 repair). A message
+    lands on the lane of whoever actually sent it, so a team's broadcast is one
+    stroke from the team's own lane rather than four from a member that had no
+    part in it. Slightly curved so that several messages exchanged at almost the
+    same instant do not collapse into a single vertical stroke.
     """
     drawn = {}
     for message in messages:
@@ -167,6 +183,7 @@ def plot_agent_state_timeline(
     title: Optional[str] = None,
     end_step: Optional[int] = None,
     messages: Optional[List[Dict[str, Any]]] = None,
+    teams: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
     """Write a Gantt-style figure of agent states. Returns the path, or None.
 
@@ -180,6 +197,9 @@ def plot_agent_state_timeline(
             guessed at.
         messages: message_log.json's contents, or None. Only ``timestamp``,
             ``sender`` and ``recipients`` are read; the content is not drawn.
+        teams: team_timeline.json's contents, or None. When present each team
+            gets a lane above its robots, and messages are drawn between those
+            lanes instead of between the members that carried them.
     """
     if not agent_states:
         return None
@@ -191,6 +211,27 @@ def plot_agent_state_timeline(
     import matplotlib.pyplot as plt  # noqa: PLC0415
 
     agents = sorted(agent_states)
+    team_members = (teams or {}).get("teams") or {}
+    # Dict order is the order the topology wired the teams in, which is the
+    # chain's speaking order and puts the leader first -- worth preserving, so
+    # this is not sorted the way the agent lanes are.
+    team_order = [
+        name for name, members in team_members.items()
+        if any(member in agent_states for member in members)
+    ]
+    rows: List[Tuple[str, str]] = []
+    if team_order:
+        placed = set()
+        for name in team_order:
+            rows.append(("team", name))
+            for member in team_members[name]:
+                if member in agent_states and member not in placed:
+                    rows.append(("agent", member))
+                    placed.add(member)
+        rows.extend(("agent", a) for a in agents if a not in placed)
+    else:
+        rows = [("agent", a) for a in agents]
+
     end_time = max(
         (float(entry[0]) for entries in agent_states.values() for entry in entries),
         default=0.0,
@@ -201,13 +242,33 @@ def plot_agent_state_timeline(
     # at least as long as the last transition anyone made.
     end_time *= 1.02
 
-    figure, axes = plt.subplots(figsize=(14, 1.4 + 0.9 * len(agents)))
+    figure, axes = plt.subplots(figsize=(14, 1.4 + 0.8 * len(rows)))
     seen_states = []
     # Half a pixel at the figure's own width: below this a bar is nothing but
     # its own edge stroke.
     min_width = end_time / (14 * 140 * 2)
+    lane_of_agent = {name: lane for lane, (kind, name) in enumerate(rows) if kind == "agent"}
+    lane_of_team = {name: lane for lane, (kind, name) in enumerate(rows) if kind == "team"}
+
+    # The team lanes first, so the member bars and the arrows sit above them.
+    team_spans = (teams or {}).get("spans") or {}
+    for name, lane in lane_of_team.items():
+        # A full-width ground bar: where it shows through, the team is not
+        # thinking and its robots are acting on what it decided last.
+        axes.barh(lane, end_time, left=0.0, height=0.34,
+                  color=TEAM_IDLE_COLOUR, edgecolor="none", zorder=1)
+        for span in team_spans.get(name, []):
+            try:
+                start, stop = float(span["start"]), float(span["end"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            kind = str(span.get("kind", ""))
+            axes.barh(lane, max(stop - start, min_width), left=start, height=0.34,
+                      color=TEAM_SPAN_COLOURS.get(kind, "#cccccc"),
+                      edgecolor="none", zorder=2)
+
     absorbed_total = 0
-    for lane, agent_id in enumerate(agents):
+    for agent_id, lane in lane_of_agent.items():
         spans, absorbed = _coalesce(
             _spans(agent_states[agent_id], end_time, end_step), min_width
         )
@@ -229,13 +290,26 @@ def plot_agent_state_timeline(
                     ha="center", va="center", fontsize=7, color="white",
                 )
 
-    lane_of = {agent_id: lane for lane, agent_id in enumerate(agents)}
-    drawn_messages = _draw_messages(axes, messages or [], lane_of, end_time)
+    # Teams and robots share one address space on the figure, because they do
+    # in the log: a message record names its sender, and that is a team name
+    # when a team sent it and an agent id when a robot did.
+    drawn_messages = _draw_messages(
+        axes, messages or [], {**lane_of_agent, **lane_of_team}, end_time
+    )
     message_count = sum(drawn_messages.values())
 
-    axes.set_yticks(range(len(agents)))
-    axes.set_yticklabels(agents)
-    axes.set_ylim(-0.6, len(agents) - 0.4)
+    for lane, (kind, _name) in enumerate(rows):
+        if kind == "team" and lane:
+            axes.axhline(lane - 0.5, color="#adb5bd", linewidth=0.6, zorder=0)
+
+    axes.set_yticks(range(len(rows)))
+    axes.set_yticklabels(
+        [name if kind == "team" else f"   {name}" for kind, name in rows]
+    )
+    for label, (kind, _name) in zip(axes.get_yticklabels(), rows):
+        if kind == "team":
+            label.set_fontweight("bold")
+    axes.set_ylim(-0.6, len(rows) - 0.4)
     axes.invert_yaxis()
     # A sliver of left margin: a leader's opening broadcast is sent at t~0, and
     # against xlim=(0, ...) its marker and arrowhead sit on the spine.
@@ -249,6 +323,14 @@ def plot_agent_state_timeline(
 
     order = [s for s in ("reasoning", "interrupted", "waiting", "executing") if s in seen_states]
     handles = [mpatches.Patch(color=STATE_COLOURS[s], label=s) for s in order]
+    if lane_of_team:
+        # Only the ground bar gets an entry. A team lane is red exactly when its
+        # members are, and amber exactly when they are interrupted, so it reads
+        # off the state colours already listed -- a second swatch of the same
+        # red under a different name would read as two different things.
+        handles.append(mpatches.Patch(
+            color=TEAM_IDLE_COLOUR, label="team not thinking (robots acting)",
+        ))
     if message_count:
         # Proxy artists, because an annotate() arrow is not a legend handle.
         from matplotlib.lines import Line2D  # noqa: PLC0415
@@ -322,6 +404,64 @@ def _messages(run_dir: str) -> List[Dict[str, Any]]:
     return payload if isinstance(payload, list) else []
 
 
+def _teams(run_dir: str) -> Optional[Dict[str, Any]]:
+    """team_timeline.json, or None.
+
+    Absent for runs made before teams existed, and for any run whose agents are
+    not team agents; the figure then falls back to one lane per robot.
+    """
+    path = os.path.join(run_dir, "team_timeline.json")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def save_team_timeline(agents: Dict[str, Any], output_path: str) -> Optional[str]:
+    """Write which robots each team is made of, and when it was thinking.
+
+    Recorded by the brains rather than derived from the members, because a team
+    is the thing that thinks here and only it knows when it started. Times are
+    made relative to the same origin the agent states use, so both land on one
+    x axis. Messages are not written here: they are addressed team to team, so
+    message_log.json already records them at team level.
+    """
+    brains, origins = {}, []
+    for agent in agents.values():
+        brain = getattr(agent, "brain", None)
+        if brain is not None and getattr(brain, "team_name", None):
+            brains[brain.team_name] = brain
+        start = getattr(agent, "_start_time", None)
+        if start is not None:
+            origins.append(float(start))
+    if not brains or not origins:
+        return None
+    origin = min(origins)
+
+    payload = {
+        "teams": {name: list(brain.member_ids) for name, brain in brains.items()},
+        "spans": {
+            name: [
+                {
+                    "kind": span["kind"],
+                    "start": float(span["start"]) - origin,
+                    "end": float(span["end"]) - origin,
+                }
+                for span in getattr(brain, "timeline", [])
+            ]
+            for name, brain in brains.items()
+        },
+    }
+    with open(output_path, "w") as handle:
+        json.dump(payload, handle, indent=2)
+    print(f"Saved {len(brains)} team timelines to {output_path}")
+    return output_path
+
+
 def plot_from_run_dir(run_dir: str, filename: str = "agent_timeline.png") -> Optional[str]:
     """Draw the timeline for an existing run directory."""
     states_path = os.path.join(run_dir, "agent_states.json")
@@ -335,6 +475,7 @@ def plot_from_run_dir(run_dir: str, filename: str = "agent_timeline.png") -> Opt
         title=os.path.basename(run_dir),
         end_step=_episode_end_step(run_dir),
         messages=_messages(run_dir),
+        teams=_teams(run_dir),
     )
 
 

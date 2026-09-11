@@ -405,21 +405,34 @@ every team one LLM plans for all its robots. All three runners take
 one-LLM-per-robot behaviour -- a generalisation, not a replacement. There is no
 `run_team.py`.
 
-A team **speaks** through its first member (the broker and the ordering
-primitives are keyed by agent id) but is **addressed** as a whole: `send_to`
-holds every member, so an inter-team message interrupts all four of its robots.
-Verified on GPU, 8 robots in 2 teams of 4:
+**A team is the address, on both sides.** `wait_for` and `send_to` hold *team
+names*; `TeamBrain._say` goes through `MessageBroker.send_team_message`; the log
+records `sender: "team_0", recipients: ["team_1"], sender_type: "team"`.
+Delivery still reaches every robot of an addressed team -- an interrupt has to
+stop all of it, or the team splits across I and W and stalls its own interrupt
+barrier -- but that expansion is the broker's (`delivered_to`), not the address.
 
-    centralized      team_0 -> 4 agents (leader_broadcast)   x3
-                     team_1 -> 1 agent  (follower_response)  x4
-    broadcast_chain  team_0 -> 4 agents (broadcast_chain)    x2
-    individual       no messages at all
+The wiring used to be in agent ids: a team was addressed as its four robots and
+waited on through whichever member "spoke for" it. Three things followed from
+that, and all three are gone with it -- every send was credited to a robot that
+had no part in composing it; one conversation between two teams appeared in the
+log as four; and a team's own inbox, being the union of four robot inboxes,
+quoted the same message four times into its next prompt. `_collect_heard`
+de-dupes on (sender, timestamp, content) for the same reason.
 
 Three brains carry the roles: `ChainTeamBrain` waits on the preceding team's
 speaker then broadcasts its allocation onward; `LeaderTeamBrain` interrupts the
 follower teams for status, waits, then plans; `FollowerTeamBrain` answers from
 its own state rather than spending an LLM call to paraphrase what it already
 knows. What a team heard goes into its next prompt.
+
+The prompt says so too. `build_team_system_prompt` (not `build_system_prompt`,
+which tells a model it *is* a robot and asks it for one plan) opens with "You
+command TEAM 'team_0' -- 4 robots (...)" and carries `TEAM_ENV_DESCRIPTION`, the
+same world in the third person: "a robot must be closer than", "give it wait",
+"never give one robot an id that appeared only under another robot". The two
+descriptions are separate texts and drift silently, so
+`test_team_prompt_stubbed.py` fails if a shared rule leaves either one.
 
 A team shares one brain: every member's observation goes into one prompt and the answer
 is one plan per robot, so the allocation is made once and is visible. Four robots
@@ -453,6 +466,23 @@ locks and the first thread through makes the call while the rest read the result
 A team of one behaves exactly like the individual topology, which is why an
 unteamed robot gets a team of its own: one-LLM-per-robot is this code at N=1,
 not a second code path. `--team-size K` groups `--agents N` without a JSON file.
+
+**Holding is decided against the barrier, not against the plan dict.** Two races
+made a member idle through its own team's decision, and both were found in a
+run's `agent_states.json` rather than by reading:
+
+* A member that got "hold" and was still acting on it when the last teammate
+  arrived is in R, which `_recall_holders` deliberately leaves alone -- R is not
+  an idle state. It then went ready with a hold and sat in W for the whole call
+  (measured: 15.8 s of `waiting` against its teammates' 15.8 s of `reasoning`).
+* Asking the brain once more before committing to the hold is not enough: the
+  recall runs *before* the call, so at that moment there is no plan to hand back.
+
+`claim_pending_plan` settles it on whether the team is complete. If it is, the
+member waits in R for the round to finish -- safe, because a frozen world is
+exactly what the team is waiting on and the call needs no simulation -- and
+counts `rounds` to tell "the call has not started" from "the call finished
+without me". If it is not, teammates really are still working, and it holds.
 
 **A robot has no role and no speaker order of its own any more** -- both belong
 to its team. Three leftovers from the per-robot world were each caught by a run

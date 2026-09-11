@@ -245,24 +245,26 @@ def main() -> int:
 
     chain = brains_of("broadcast_chain")
     assert all(isinstance(b, ChainTeamBrain) for b in chain.values())
-    # A team *speaks* through its first member but is *addressed* as a whole:
-    # wait_for holds speakers only, send_to holds every member, so an inter-team
-    # message interrupts all four robots of the recipient team.
-    assert chain["t1"].wait_for == ["a0"], chain["t1"].wait_for
-    assert chain["t0"].send_to == ["a2", "a3", "a4", "a5"], chain["t0"].send_to
+    # Both sides of the wiring are team names. They used to be agent ids -- a
+    # team was addressed as its four robots and waited on through whichever
+    # member spoke for it -- which put a conversation between two teams in the
+    # log as eight one-sided ones between robots that never composed a word.
+    assert chain["t1"].wait_for == ["t0"], chain["t1"].wait_for
+    assert chain["t0"].send_to == ["t1", "t2"], chain["t0"].send_to
     assert chain["t2"].send_to == [], "the last team has nobody downstream"
 
     central = brains_of("centralized")
     assert isinstance(central["t0"], LeaderTeamBrain)
     assert isinstance(central["t1"], FollowerTeamBrain)
-    assert central["t0"].wait_for == ["a2", "a4"], "leader waits on follower speakers"
-    assert central["t0"].send_to == ["a2", "a3", "a4", "a5"], "leader addresses whole teams"
-    # A follower answers the leader's whole team, not just its speaker: a
-    # message that reaches one member interrupts only that member, which left
-    # the leader team split across I and W and stalled its interrupt barrier.
-    assert central["t1"].wait_for == ["a0"], central["t1"].wait_for
-    assert central["t1"].send_to == ["a0", "a1"], central["t1"].send_to
-    ok("individual/chain/centralized wire teams; speakers are waited on, whole teams addressed")
+    assert central["t0"].wait_for == ["t1", "t2"], central["t0"].wait_for
+    assert central["t0"].send_to == ["t1", "t2"], central["t0"].send_to
+    assert central["t1"].wait_for == ["t0"], central["t1"].wait_for
+    assert central["t1"].send_to == ["t0"], central["t1"].send_to
+    # Delivery still reaches every robot of an addressed team: an interrupt has
+    # to stop all of it, or the team splits across I and W and stalls its own
+    # interrupt barrier. That expansion belongs to the broker, not the address.
+    assert central["t1"].all_teams["t0"] == ["a0", "a1"]
+    ok("individual/chain/centralized wire team to team, and teams expand at delivery")
 
     print("test 9: when the team thinks, every member is reasoning")
     from coop2.cognitive.agent.agent import AgentState
@@ -293,6 +295,124 @@ def main() -> int:
     # And the hold each was running is terminal, or create_agent_thread would
     # decline to re-plan it and the member would never become ready again.
     ok("holders are recalled into R, with their holds marked terminal")
+
+    print("test 10: a follower answers the leader, and only when it was asked")
+    from coop2.cognitive.messages import MessageBroker
+
+    def centralized_pair():
+        client = StubClient()
+        teams = {"lead": ["agent_0", "agent_1"], "follow": ["agent_2", "agent_3"]}
+        agents = create_llm_team_topology(
+            llm_client=client, teams=teams, topology="centralized", verbose=False
+        )
+        broker = MessageBroker(agents)
+        for agent in agents.values():
+            agent.message_broker = broker
+            agent.symbolic_view = f"view for {agent.agent_id}"
+            agent.observe({}, 0)
+        return client, agents, broker
+
+    # The follower team plans first, with nothing from the leader in its inbox.
+    _client, agents, broker = centralized_pair()
+    for name in ("agent_2", "agent_3"):
+        agents[name].handle_reasoning()
+    sent = [m for m in broker.get_message_log()
+            if (m.get("metadata") or {}).get("type") == "follower_response"]
+    # It used to answer anyway: `_await_speakers` releases as soon as the leader
+    # merely *looks* ready, which at the start of a run it does, so the reply
+    # was logged in the same instant as -- and ahead of -- the request.
+    assert not sent, f"answered a question nobody asked: {sent}"
+
+    # Now with the leader's request actually delivered first.
+    _client, agents, broker = centralized_pair()
+    for name in ("agent_0", "agent_1"):
+        agents[name].handle_reasoning()
+    asks = [m for m in broker.get_message_log()
+            if (m.get("metadata") or {}).get("type") == "leader_broadcast"]
+    assert len(asks) == 1, asks
+
+    # The team read it once, not once per robot it was handed to. Delivery
+    # copies a team message into all four inboxes, so draining them all used to
+    # quote the same request four times in the prompt.
+    follow = agents["agent_2"].brain
+    follow._collect_heard()
+    assert follow._heard_block().count("From lead:") == 1, follow._heard_block()
+
+    for name in ("agent_2", "agent_3"):
+        agents[name].handle_reasoning()
+    replies = [m for m in broker.get_message_log()
+               if (m.get("metadata") or {}).get("type") == "follower_response"]
+    assert len(replies) == 1, replies
+    assert replies[0]["timestamp"] >= asks[0]["timestamp"], "reply predates the request"
+    ok("silent when unasked; answers once, after the request, and quotes it once")
+
+    print("test 11: the team's own timeline is recorded and saved")
+    import json
+    import tempfile
+
+    from coop2.experiment.agent_timeline import save_team_timeline
+
+    lead = agents["agent_0"].brain
+    assert [s["kind"] for s in lead.timeline] == ["planning"], lead.timeline
+    assert lead.timeline[0]["end"] >= lead.timeline[0]["start"]
+
+    # The log is addressed team to team. It used to read "agent_0 -> agent_2,
+    # agent_3", which credited the send to a robot that had no part in writing
+    # it and turned one conversation between two teams into several.
+    log = broker.get_message_log()
+    assert [(m["sender"], tuple(m["recipients"])) for m in log] == [
+        ("lead", ("follow",)), ("follow", ("lead",)),
+    ], log
+    assert all(m.get("sender_type") == "team" for m in log), log
+    assert log[0]["delivered_to"] == ["agent_2", "agent_3"], log[0]
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = save_team_timeline(agents, os.path.join(directory, "team_timeline.json"))
+        payload = json.load(open(path))
+    assert set(payload["teams"]) == {"lead", "follow"}
+    assert payload["teams"]["lead"] == ["agent_0", "agent_1"]
+    # Relative to the same origin the agent states use, or the spans would land
+    # somewhere else entirely on the shared x axis.
+    assert all(0.0 <= s["start"] < 60.0 for s in payload["spans"]["lead"]), payload["spans"]
+    ok("addressed team to team in the log, with the thinking spans recorded")
+
+    print("test 12: a member that raced the closing barrier waits, it does not hold")
+    import threading as _threading
+    import time as _time
+
+    class Slow(StubClient):
+        def generate_team_plan(self, messages, temperature=0.7):
+            _time.sleep(0.3)  # an LLM call is seconds; the race is microseconds
+            return super().generate_team_plan(messages, temperature)
+
+    client = Slow()
+    ids = ["agent_0", "agent_1", "agent_2"]
+    agents = create_llm_team_topology(llm_client=client, teams={"t": ids}, verbose=False)
+    for agent in agents.values():
+        agent.symbolic_view = f"view for {agent.agent_id}"
+        agent.observe({}, 0)
+    brain = agents["agent_0"].brain
+
+    # agent_0 and agent_1 have both asked and been told to hold. agent_1 is now
+    # in the gap between being told that and acting on it.
+    assert brain.request_plan("agent_0") is None
+    assert brain.request_plan("agent_1") is None
+
+    closer = _threading.Thread(target=agents["agent_2"].handle_reasoning)
+    closer.start()
+    _time.sleep(0.05)  # the barrier closes; agent_1 is still in that gap
+
+    # The recall cannot reach agent_1 -- it is in R, which is not an idle state
+    # and is deliberately left alone -- and there is no plan to hand it yet
+    # either, because the call has only just started. Asking once returned None
+    # and it held: measured at 15.8 s of "waiting" through its own team's call,
+    # while its teammates showed 15.8 s of "reasoning".
+    plan = brain.claim_pending_plan("agent_1")
+    closer.join(timeout=5.0)
+    assert plan is not None, "agent_1 held through a call that was already under way"
+    assert plan.actions[0].action_type == "navigate_to", plan.actions[0].action_type
+    assert client.plan_calls == 1, client.plan_calls
+    ok("it blocks on the call in flight and comes back with the real plan")
 
     print("\nALL TESTS PASSED")
     return 0

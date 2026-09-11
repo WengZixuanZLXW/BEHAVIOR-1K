@@ -35,7 +35,7 @@ from coop2.cognitive import (
 )
 from coop2.cognitive.viz import RealtimeVisualizationWrapper
 from coop2.cognitive.agent.llm_io_log import LLMIORecorder
-from coop2.experiment.agent_timeline import plot_from_run_dir
+from coop2.experiment.agent_timeline import plot_from_run_dir, save_team_timeline
 from coop2.behavior_env.team_config import homogeneous_layout, load_team_layout
 from coop2.comm_topology.llm_team import create_llm_team_topology
 try:
@@ -301,6 +301,8 @@ def run_broadcast_chain_experiment(
     # save_logs() above wrote agent_states.json; the timeline is drawn from that
     # file rather than from plan_history, so it shows the FSM (R/W/X/I) and not
     # just plan boundaries.
+    # Before the figure: the team lanes are drawn from this file.
+    save_team_timeline(agents, os.path.join(output_dir, "team_timeline.json"))
     plot_from_run_dir(output_dir)
     
     comprehensive_timeline_path = os.path.join(output_dir, 'comprehensive_timeline.png')
