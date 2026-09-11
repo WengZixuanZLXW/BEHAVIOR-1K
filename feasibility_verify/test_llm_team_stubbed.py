@@ -955,6 +955,56 @@ def main() -> int:
     )
     ok("four members, a four-tenths-of-a-second call, exactly one of them makes it")
 
+    print("test 25: the team's interrupt span starts when the message arrives")
+    # It used to start when the decision call did, which is after the follower
+    # has composed and sent its report -- so the team lane was blank from
+    # receipt until the reply went out and the figure read as a team
+    # interrupting itself when it *sends*. Measured on
+    # centralized_agents12_..._043310: request at t=162.23, span from 164.56,
+    # reply sent at 164.56.
+    client = StubClient()
+    agents = create_llm_team_topology(
+        llm_client=client, teams={"india": [f"agent_{i}" for i in range(2)]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    ids = [f"agent_{i}" for i in range(2)]
+    for name in ids:
+        agents[name].symbolic_view = f"view for {name}"
+        agents[name].observe({}, 0)
+        agents[name].plan = None
+        agents[name]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    broker = MessageBroker(agents)
+    broker.teams = {"india": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    brain = agents[ids[0]].brain
+    before = len(brain.timeline)
+    arrived = time.time()
+    broker.send_team_message(
+        sender_team="outsider", recipients=["india"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    time.sleep(0.2)                       # whatever the team does in between
+    threads = [threading.Thread(target=agents[n].handle_interrupt) for n in ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10.0)
+    spans = brain.timeline[before:]
+    assert len(spans) == 1, [s["kind"] for s in spans]
+    span = spans[0]
+    assert span["kind"] == "interrupted", span["kind"]
+    assert span["start"] <= arrived + 0.1, (
+        "the span starts after the message arrived, so the lane is blank "
+        "through the part the team spends answering"
+    )
+    assert span["end"] - span["start"] >= 0.2, (
+        "the span does not cover the gap between arrival and the decision"
+    )
+    ok("one span, opening when the message landed and closing when it decided")
+
     print("\nALL TESTS PASSED")
     return 0
 

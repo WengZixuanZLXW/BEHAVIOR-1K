@@ -56,6 +56,11 @@ MESSAGE_COLOUR = "#22223b"
 #: freeze it -- or it is not, and its robots are acting on what it last decided.
 TEAM_SPAN_COLOURS = {
     "planning": STATE_COLOURS["reasoning"],
+    # The whole window from the message arriving to the decision being
+    # published, the report composed in between included. "deciding" is the
+    # older name for the decision call alone; kept so an existing run still
+    # draws.
+    "interrupted": STATE_COLOURS["interrupted"],
     "deciding": STATE_COLOURS["interrupted"],
 }
 TEAM_IDLE_COLOUR = "#e9ecef"

@@ -218,6 +218,14 @@ class TeamBrain:
         # centralized_agents12_..._043310 -- four CLOSES lines per message, and
         # 16 interrupt calls for 3 requests.
         self._deciding = False
+        # When the broker announced this interrupt round, i.e. when the message
+        # arrived. The team is interrupted from then until its decision is
+        # published, and the report it composes in between is part of that --
+        # recording only the `deciding` call left the lane blank from receipt
+        # until the reply went out, which reads as a team interrupting itself
+        # when it *sends*. Measured on centralized_agents12_..._043310:
+        # request at t=162.23, deciding span from 164.56, reply sent at 164.56.
+        self._interrupt_opened: Optional[float] = None
         #: Plans produced by the last team call, drained by their owners.
         self._pending_plans: Dict[str, SymbolicPlan] = {}
         #: Members that have been told they may hold this round and have not yet
@@ -771,9 +779,15 @@ class TeamBrain:
         with self._barrier_lock:
             self._pending_decisions = decisions
             self._deciding = False
-            self.timeline.append(
-                {"kind": "deciding", "start": started, "end": time.time()}
-            )
+            # From the message arriving, not from the model call starting: the
+            # report composed in between is the team handling the interrupt too.
+            self.timeline.append({
+                "kind": "interrupted",
+                "start": self._interrupt_opened
+                if self._interrupt_opened is not None else started,
+                "end": time.time(),
+            })
+            self._interrupt_opened = None
             self._decided.set()
             mine = self._pending_decisions.pop(agent_id, None)
         self._announce_replans(decisions)
@@ -788,6 +802,7 @@ class TeamBrain:
         """
         with self._barrier_lock:
             self._expected_interrupt = set(names)
+            self._interrupt_opened = time.time()
             self._deciding = False
             self._interrupted.clear()
             self._pending_decisions = {}
