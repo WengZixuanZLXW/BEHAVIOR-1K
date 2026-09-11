@@ -38,6 +38,7 @@ from coop2.cognitive import (
 from coop2.cognitive.viz import RealtimeVisualizationWrapper
 from coop2.cognitive.agent.llm_io_log import LLMIORecorder
 from coop2.experiment.agent_timeline import plot_from_run_dir, save_team_timeline
+from coop2.experiment.stall_watch import StallWatch
 from coop2.behavior_env.team_config import homogeneous_layout, load_team_layout
 from coop2.comm_topology.llm_team import create_llm_team_topology
 try:
@@ -220,6 +221,7 @@ def run_broadcast_chain_experiment(
         deadline = time.monotonic() + float(time_limit_seconds)
     
     running_threads: Dict[str, threading.Thread] = {}
+    stall_watch = StallWatch(env.agents)
     
     try:
         while env.current_step < max_steps and not done:
@@ -238,6 +240,9 @@ def run_broadcast_chain_experiment(
                         running_threads[aid] = threading.Thread(target=agent.create_agent_thread)
                         running_threads[aid].start()
                 env.wait_for_state_change(timeout=0.05)
+                # Say who the loop is stuck on. Several paths can leave an agent
+                # that will never be ready, and they are all silent.
+                stall_watch.check()
 
             if timed_out:
                 break

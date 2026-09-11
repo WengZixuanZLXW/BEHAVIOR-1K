@@ -255,7 +255,10 @@ anything for an apple would make the table unreachable from any pose.
 Measured on the same seed, tightening 0.8 -> 0.6 **helped**: goal at env_step 1230
 against 1485, and `TOO_FAR` 15 -> 11, with `NO_SPACE_AROUND_TARGET` still 0. A
 narrower annulus puts the sampled standing pose closer to the target, so the
-travel charge (60 ticks/m) shrinks. Any metric recorded before this has different
+travel charge shrinks. **The charge is 30 ticks/m since 2026-09-11** (it was 60
+when this was measured); travel is most of the tick budget, so no step count
+recorded at 60 is comparable with one recorded now. Any metric recorded before
+this has different
 travel costs and is not comparable.
 
 ## Agent start poses are sampled, but seed-determined (2026-09-09)
@@ -354,7 +357,8 @@ Notes worth keeping:
 * **The distances are the problem, not the sampling.** `ontop floor` lets the
   sampler use the whole room and this hall is ~50 x 57 m. The cached draw puts
   chairs 4.7-43.0 m from the table (nine round trips = 550 m ~ 33 000 travel
-  ticks at 60 ticks/m), and `place_robots` starts the team ~47-53 m away because
+  ticks at 30 ticks/m -- 33 000 at the 60 it was measured at), and `place_robots`
+  starts the team ~47-53 m away because
   it clusters around wherever the first pose lands. Budget accordingly -- of the
   order of 60 000 steps, against 4 000 for the two-apple Pomaria task -- or
   re-sample for a tighter draw, or centre the furniture deliberately.

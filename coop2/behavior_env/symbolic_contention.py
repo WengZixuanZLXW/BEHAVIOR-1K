@@ -82,21 +82,30 @@ DEFAULT_GATED_PRIMITIVES = frozenset({GATE_GRASP, GATE_PLACE, GATE_OPEN_CLOSE, G
 DEFAULT_RADIUS_MARGIN = 0.05
 
 #: Ticks of travel per metre. One env step is 1/``action_frequency`` seconds
-#: (30 Hz by default), so 60 ticks/m is 2 s/m, i.e. a 0.5 m/s base -- roughly
-#: what the physical primitives achieve. Tune it as an experiment variable:
-#: this number sets how expensive distance is relative to a decision.
+#: (30 Hz by default), so 30 ticks/m is 1 s/m, i.e. a 1.0 m/s base. Tune it as
+#: an experiment variable: this number sets how expensive distance is relative
+#: to a decision.
 #:
-#: **Do not halve this for speed.** It was tried (30 ticks/m, 2026-09-10) because
-#: navigate_to is 77 % of all primitive work in the nine-apple hall and this
-#: constant, not the engine, is what sets how long a run takes. It works and it
-#: is faster, but 30 ticks/m is a 1.0 m/s base -- about twice a real R1 -- and
-#: fidelity to the physical primitive is the whole reason 60 was chosen (user,
-#: 2026-09-10). Reverted for that reason. Two things worth keeping from the
-#: attempt: the total navigate_to does *not* halve, because each one also pays a
-#: settle floor of ~100 ticks (measured 213/165/243/173 ticks for 2.6-3.7 m hops
-#: at 30/m), and a shorter episode is better bought by making the task's objects
-#: less scattered than by making the robot faster than it is.
-DEFAULT_TRAVEL_TICKS_PER_METER = 60.0
+#: **30, chosen for speed with the cost known** (user, 2026-09-11). navigate_to
+#: is 77 % of all primitive work in the nine-apple hall, and this constant, not
+#: the engine, is what sets how long a run takes. The price is fidelity: 1.0 m/s
+#: is about twice a real R1, and 60 ticks/m (0.5 m/s) is what the physical
+#: primitives actually achieve. It was set to 30 on 2026-09-10, reverted to 60
+#: the same day for that reason, and set back here -- the experiments are the
+#: thing being bought, and they were too slow to run.
+#:
+#: Two measurements worth keeping either way:
+#:
+#: * The total navigate_to does **not** halve. Each one also pays a settle floor
+#:   of ~100 ticks: 213/165/243/173 ticks for 2.6-3.7 m hops at 30/m.
+#: * A shorter episode is better bought by making the task's objects less
+#:   scattered than by making the robot faster than it is. The nine-apple hall
+#:   puts chairs 4.7-43 m from the table; that, not the speed, is why a run
+#:   needs tens of thousands of steps.
+#:
+#: Any metric recorded at 60 ticks/m is **not comparable** with one recorded
+#: here -- travel is most of the tick budget, so every step count moves.
+DEFAULT_TRAVEL_TICKS_PER_METER = 30.0
 
 #: Ticks a ``wait`` holds for when the agent does not say. Long enough that a
 #: teammate's NAVIGATE_TO (300-500 ticks here) makes real progress during it.
