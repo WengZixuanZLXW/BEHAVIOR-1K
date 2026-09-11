@@ -4,7 +4,7 @@ Message broker for inter-agent communication in MA-Crafter.
 Routes messages between agents by adding to their message buffers.
 """
 
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, Union, Set
 import time
 
 from .coop2_messages import is_coop2_repair_message
@@ -85,12 +85,51 @@ class MessageBroker:
                 and (is_repair_message or is_execution_interrupt))
         )
 
-    def _announce_interrupts(self, message_record: Dict, recipient_ids: List[str]) -> None:
+    def _partly_interruptible(self, message_record: Dict,
+                              recipient_ids: List[str]) -> Set[str]:
+        """Members of addressed teams that this delivery must NOT interrupt.
+
+        A team goes to I whole or stays as it is. Returns every member of every
+        addressed team for which the per-agent rule would stop some members and
+        skip others -- a team already reasoning being the usual case, since R is
+        not interruptible.
+        """
+        blocked: Set[str] = set()
+        seen: List = []               # [(brain, [members addressed])]
+        for recipient_id in recipient_ids:
+            recipient = self.agents.get(recipient_id)
+            if recipient is None:
+                continue
+            brain = getattr(recipient, "brain", None)
+            if brain is None or not hasattr(brain, "expect_interrupt"):
+                continue              # not a team: the per-agent rule stands
+            for known, members in seen:
+                if known is brain:
+                    members.append(recipient_id)
+                    break
+            else:
+                seen.append((brain, [recipient_id]))
+        for brain, addressed in seen:
+            members = list(getattr(brain, "member_ids", addressed))
+            stoppable = [
+                name for name in members
+                if self.agents.get(name) is not None
+                and self._will_interrupt(self.agents[name], message_record)
+            ]
+            if stoppable and len(stoppable) != len(members):
+                blocked.update(members)
+        return blocked
+
+    def _announce_interrupts(self, message_record: Dict, recipient_ids: List[str],
+                             blocked: Optional[Set[str]] = None) -> None:
         """Tell each addressed team which of its members this delivery will stop."""
+        blocked = blocked or set()
         expected: List = []          # [(brain, [names])], keyed by identity
         for recipient_id in recipient_ids:
             recipient = self.agents.get(recipient_id)
-            if recipient is None or not self._will_interrupt(recipient, message_record):
+            if recipient is None or recipient_id in blocked:
+                continue
+            if not self._will_interrupt(recipient, message_record):
                 continue
             brain = getattr(recipient, "brain", None)
             if brain is None or not hasattr(brain, "expect_interrupt"):
@@ -127,7 +166,21 @@ class MessageBroker:
         # timing-dependent, and it names only the members this delivery will
         # actually interrupt -- a member in R is skipped here as it is below, so
         # the barrier does not wait for one that was never stopped.
-        self._announce_interrupts(message_record, recipient_ids)
+        # A team is interrupted as a unit or not at all. The rule below is per
+        # *agent* and knows nothing about teams: W and X are stopped, R is
+        # skipped. So a team with some members in W and some still in R split
+        # across I and R -- seen at t=0 of
+        # centralized_agents8_..._034937, agent_5/6 in I while agent_4/7 were
+        # in R -- which contradicts the one thing a team is supposed to be, and
+        # leaves the interrupt barrier holding a partial set.
+        #
+        # Nothing is lost by declining: a team with a member in R is already
+        # thinking, and the message is delivered either way -- it is read at the
+        # team's planning barrier, folded into the decision it was already
+        # about to make. Interrupting half of it adds no information and costs a
+        # split.
+        blocked = self._partly_interruptible(message_record, recipient_ids)
+        self._announce_interrupts(message_record, recipient_ids, blocked)
         actually_interrupted: List[str] = []
 
         for recipient_id in recipient_ids:
@@ -177,9 +230,14 @@ class MessageBroker:
             # for its full timeout waiting for teammates that were never
             # going to arrive.
             is_expected_reply = bool(metadata.get("expected_reply"))
-            should_interrupt = not is_expected_reply and (
-                recipient.state == AgentState.W
-                or (recipient.state == AgentState.X and (is_repair_message or is_execution_interrupt))
+            should_interrupt = (
+                recipient_id not in blocked
+                and not is_expected_reply
+                and (
+                    recipient.state == AgentState.W
+                    or (recipient.state == AgentState.X
+                        and (is_repair_message or is_execution_interrupt))
+                )
             )
             if should_interrupt:
                 before = recipient.state

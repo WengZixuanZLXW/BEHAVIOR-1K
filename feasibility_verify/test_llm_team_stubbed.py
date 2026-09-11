@@ -586,8 +586,8 @@ def main() -> int:
     # is what a real team does when its members reach their planning barrier.
     real_announce = broker._announce_interrupts
 
-    def announce_then_slip(message_record, recipient_ids):
-        real_announce(message_record, recipient_ids)
+    def announce_then_slip(message_record, recipient_ids, blocked=None):
+        real_announce(message_record, recipient_ids, blocked)
         for name in ids[:3]:
             agents[name]._set_state(AgentState.R, timestamp=0.0, env_step=0)
 
@@ -834,6 +834,63 @@ def main() -> int:
         "left in R with a live plan: create_agent_thread will do nothing forever"
     )
     ok("its plan is marked terminal, so the thread has a branch to take")
+
+    print("test 22: a team goes to I whole, or not at all")
+    # The broker's rule is per agent and knows nothing about teams: W and X are
+    # stopped, R is skipped. A team with some members in W and some still in R
+    # therefore split across I and R -- seen at t=0 of
+    # centralized_agents8_..._034937, agent_5/6 in I while agent_4/7 reasoned --
+    # which contradicts the one thing a team is. Nothing is lost by declining:
+    # the message is delivered either way and read at the team's own barrier.
+    client, agents, ids = make_team(4, name="foxtrot")
+    for name in ids:
+        agents[name].plan = None
+    broker = MessageBroker(agents)
+    broker.teams = {"foxtrot": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    # Two in W, two still reasoning: the mixed case.
+    for name in ids[:2]:
+        agents[name]._set_state(AgentState.W, timestamp=0.0, env_step=0)
+    assert all(agents[n].state is AgentState.R for n in ids[2:])
+    broker.send_team_message(
+        sender_team="outsider", recipients=["foxtrot"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    states = [agents[n].state for n in ids]
+    assert all(s is not AgentState.I for s in states), (
+        f"the team split: {list(zip(ids, [s.value for s in states]))}"
+    )
+    assert agents[ids[0]].brain._expected_interrupt == set(), (
+        "a barrier round was opened for a team that was not interrupted"
+    )
+    # Declining to interrupt is not declining to deliver.
+    assert all(len(agents[n].message_buffer) == 1 for n in ids), (
+        "the message must still reach every member's inbox"
+    )
+    ok("mixed team: nobody is interrupted, everybody is delivered to")
+
+    print("\ntest 23: a team entirely in W or X is still interrupted whole")
+    client, agents, ids = make_team(4, name="golf")
+    for name in ids:
+        agents[name].plan = None
+        agents[name]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    broker = MessageBroker(agents)
+    broker.teams = {"golf": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+    broker.send_team_message(
+        sender_team="outsider", recipients=["golf"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    assert all(agents[n].state is AgentState.I for n in ids), (
+        "an all-executing team must be stopped in full"
+    )
+    assert agents[ids[0]].brain._expected_interrupt == set(ids)
+    ok("all four stopped, and the barrier knows to wait for four")
 
     print("\nALL TESTS PASSED")
     return 0
