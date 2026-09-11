@@ -37,6 +37,13 @@ STATE_COLOURS = {
     "interrupted": "#edae49",  # I -- message arrived, world frozen
     "waiting": "#8d99ae",      # W -- ready, waiting for the others
     "executing": "#2a9d8f",    # X -- primitive advancing
+    # A hold is state X too: the member is running a `wait` primitive to keep
+    # the world moving for its teammates. Drawn as executing it is
+    # indistinguishable from work, and it is not work -- agent_2 in
+    # centralized_agents8_..._040821 shows 33 consecutive 60-tick holds from
+    # env_step 474 to the end, 81 % of the episode, which read as a series of
+    # green "it did something" bars.
+    "holding": "#9dd6cf",      # X, but idling for the team
 }
 
 #: Messages are drawn in one colour on purpose: the arrow already carries the
@@ -189,6 +196,7 @@ def plot_agent_state_timeline(
     end_step: Optional[int] = None,
     messages: Optional[List[Dict[str, Any]]] = None,
     teams: Optional[Dict[str, Any]] = None,
+    holds: Optional[Dict[str, List[Any]]] = None,
 ) -> Optional[str]:
     """Write a Gantt-style figure of agent states. Returns the path, or None.
 
@@ -278,7 +286,11 @@ def plot_agent_state_timeline(
             _spans(agent_states[agent_id], end_time, end_step), min_width
         )
         absorbed_total += absorbed
+        agent_holds = (holds or {}).get(agent_id) or []
         for start, stop, state, first_step, last_step in spans:
+            if state == "executing" and _inside_hold(first_step, last_step, agent_holds):
+                # Same FSM state, a different thing entirely.
+                state = "holding"
             axes.barh(
                 lane, stop - start, left=start, height=0.55,
                 color=STATE_COLOURS.get(state, "#cccccc"),
@@ -326,8 +338,10 @@ def plot_agent_state_timeline(
     axes.set_title(title or os.path.basename(os.path.dirname(os.path.abspath(output_path))))
     axes.grid(axis="x", alpha=0.3, linestyle=":")
 
-    order = [s for s in ("reasoning", "interrupted", "waiting", "executing") if s in seen_states]
-    handles = [mpatches.Patch(color=STATE_COLOURS[s], label=s) for s in order]
+    order = [s for s in ("reasoning", "interrupted", "waiting", "executing", "holding")
+             if s in seen_states]
+    labels = {"holding": "holding for the team (idle)"}
+    handles = [mpatches.Patch(color=STATE_COLOURS[s], label=labels.get(s, s)) for s in order]
     if lane_of_team:
         # Only the ground bar gets an entry. A team lane is red exactly when its
         # members are, and amber exactly when they are interrupted, so it reads
@@ -363,6 +377,45 @@ def plot_agent_state_timeline(
     figure.savefig(output_path, dpi=140, bbox_inches="tight")
     plt.close(figure)
     return output_path
+
+
+def _inside_hold(first_step: int, last_step: int, ranges: List[Any]) -> bool:
+    """Is this executing span one of the agent's `wait_for_team` holds?"""
+    for low, high in ranges:
+        if first_step >= low and last_step <= max(high, low):
+            return True
+    return False
+
+
+def _holds(run_dir: str) -> Dict[str, List[Any]]:
+    """Per-agent env_step ranges spent holding for the team.
+
+    Read from plan_logs.json, because agent_states.json cannot say: a hold and a
+    real primitive are both state X, and only the plan's specification
+    distinguishes them.
+    """
+    path = os.path.join(run_dir, "plan_logs.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path) as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError):
+        return {}
+    plans = payload if isinstance(payload, list) else (payload.get("plan_history") or [])
+    ranges: Dict[str, List[Any]] = {}
+    for plan in plans:
+        if not isinstance(plan, dict):
+            continue
+        if not str(plan.get("specification", "")).startswith("wait_for_team"):
+            continue
+        start, end = plan.get("start_step"), plan.get("end_step")
+        if start is None:
+            continue
+        ranges.setdefault(str(plan.get("agent_id")), []).append(
+            (int(start), int(end if end is not None else start))
+        )
+    return ranges
 
 
 def _episode_end_step(run_dir: str) -> Optional[int]:
@@ -481,6 +534,7 @@ def plot_from_run_dir(run_dir: str, filename: str = "agent_timeline.png") -> Opt
         end_step=_episode_end_step(run_dir),
         messages=_messages(run_dir),
         teams=_teams(run_dir),
+        holds=_holds(run_dir),
     )
 
 
