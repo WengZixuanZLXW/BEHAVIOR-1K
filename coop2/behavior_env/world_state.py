@@ -264,6 +264,14 @@ class BehaviorWorldState:
             name = getattr(entity, "name", None)
             if not name:
                 continue
+            if name in self.robot_names:
+                # BDDL binds `agent.n.01_1` to robots[0] and, by design, to no
+                # other robot -- declaring a second agent crashes the sampler.
+                # Adopting it would rename exactly one of twelve robots into a
+                # different naming scheme than the eleven beside it, for no
+                # gain: no goal predicate mentions an agent, and `inroom` and
+                # `grasped` cannot be evaluated at runtime anyway.
+                continue
             self._ids[name] = instance_name
             # Keep the fallback counter past anything the scope already used,
             # so an object outside the scope cannot be handed an id the task
@@ -286,10 +294,30 @@ class BehaviorWorldState:
         dialect. Matching now is much cheaper than matching after M9.
 
         Falls back to the raw category for objects outside the taxonomy --
-        robots, and anything added ad hoc -- which keeps ids readable rather
-        than raising on a scene the taxonomy does not fully cover.
+        anything added ad hoc -- which keeps ids readable rather than raising on
+        a scene the taxonomy does not fully cover.
+
+        **A robot is its own id.** It already has a unique, stable, readable
+        name, and the whole rest of the stack addresses it by that name: the
+        prompt header says "you are agent_2", a team plan is keyed by agent_2,
+        and ``held_objects`` reports agent_2. Sending robots through the
+        category fallback minted a *second* set of names in the same string
+        space and then interleaved the two.
+
+        The counter numbers by scene-enumeration order, which is alphabetical
+        -- agent_0, agent_1, agent_10, agent_11, agent_2, ... -- and robots[0]
+        takes its id from the task scope instead, so it consumes no number.
+        Every robot after agent_1 therefore came out shifted: prim agent_2 was
+        shown as "agent_4", prim agent_10 as "agent_2". Verified 12/12 against
+        broadcast_chain_agents12_..._133540, where each robot's own block is
+        missing the id it is hidden under. So a robot was told "you are
+        agent_2" and shown a teammate called agent_2 in the same room, and
+        every cross-robot reference in every prompt named the wrong robot.
         """
         name = obj.name
+        if name in self.robot_names:
+            self._ids.setdefault(name, name)
+            return name
         if name in self._ids:
             return self._ids[name]
         base = self.synset_of(obj) or getattr(obj, "category", None) or type(obj).__name__.lower()

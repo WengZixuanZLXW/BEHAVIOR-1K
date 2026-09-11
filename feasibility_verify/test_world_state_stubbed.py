@@ -322,12 +322,17 @@ def main() -> int:
     assert ("grasp", "apple.n.01_1") not in near
     ok("far cup offers navigate_to only")
 
-    print("test 11: the rendered view groups by room and lists actions")
+    print("test 11: the rendered view groups by room, with the verbs on the object")
     text = sv.render_symbolic_view(obs, interaction_radius=1.5)
     assert "you are agent_0" in text and "kitchen_0" in text
-    assert "You can do:" in text and "apple.n.01_1" in text
-    assert "apple_abc_0" not in text.split("You can do:")[0].split("Relations:")[0], "raw names must not leak into the entity list"
-    ok("header, per-room grouping, and an action list all present")
+    # One line per object, carrying what can be done to it. Two sections meant
+    # every object was printed twice and the reader joined them by id.
+    line = next(l for l in text.splitlines() if l.strip().startswith("- apple.n.01_1"))
+    assert "->" in line and "navigate_to" in line, line
+    assert text.count("apple.n.01_1:") == 0, "the second listing is gone"
+    assert "You can do:" not in text
+    assert "apple_abc_0" not in text.split("Relations:")[0], "raw names must not leak"
+    ok("header, per-room grouping, and the verbs on the object's own line")
 
     print("test 12: interaction_radius may be resolved per entity")
     # The gate (interaction_radius_for) is per-object: a table's radius exceeds
@@ -407,8 +412,8 @@ def main() -> int:
 
     # And the rendered line leads with the status word, not with a verb.
     text = sv.render_symbolic_view(obs, interaction_radius=distances[far_id] / 2)
-    line = next(l for l in text.splitlines() if l.strip().startswith(far_id + ":"))
-    assert line.split(":", 1)[1].strip().startswith("unreachable"), line
+    line = next(l for l in text.splitlines() if l.strip().startswith("- " + far_id))
+    assert line.split("->", 1)[1].strip().startswith("unreachable"), line
 
     # A reachable object must not be marked.
     loose = sv.target_hints(obs, interaction_radius=distances[far_id] * 2)
@@ -442,6 +447,33 @@ def main() -> int:
     other = scoped.entity_id_for(first)
     assert other != "coffee_table.n.01_1", other
     ok(f"the bound table keeps coffee_table.n.01_1; the other becomes {other}")
+
+    print("test 16: a robot is its own id, in every naming path")
+    # The category fallback numbers by scene-enumeration order, which is
+    # alphabetical -- agent_0, agent_1, agent_10, agent_11, agent_2 -- so every
+    # robot past agent_1 came out shifted: prim agent_2 was shown as "agent_4".
+    # The shifted names live in the same string space as the real ones, so a
+    # robot was told "you are agent_2" and shown a teammate called agent_2.
+    crowd = [FakeObject(f"agent_{i}", "agent", [float(i), 0.0, 0.0])
+             for i in range(12)]
+    # Alphabetical, which is the order that produced the shift.
+    scene3 = FakeScene(sorted(crowd, key=lambda o: o.name), seg_map=seg)
+    world3 = ws.BehaviorWorldState(FakeEnv(scene3, crowd))
+    world3.start()
+    for robot in crowd:
+        assert world3.entity_id_for(robot) == robot.name, (
+            f"{robot.name} is shown as {world3.entity_id_for(robot)}"
+        )
+
+    class AgentTask:
+        # What BehaviorTask actually binds: exactly one agent, robots[0].
+        object_scope = {"agent.n.01_1": crowd[0],
+                        "coffee_table.n.01_1": FakeObject("t_0", "coffee_table", [0, 0, 0.4])}
+
+    adopted = world3.adopt_task_scope(AgentTask())
+    assert adopted == 1, f"{adopted} adopted -- the agent binding must be skipped"
+    assert world3.entity_id_for(crowd[0]) == "agent_0", world3.entity_id_for(crowd[0])
+    ok("all 12 robots keep their own names, and the BDDL agent binding is skipped")
 
     print("\nALL TESTS PASSED")
     return 0

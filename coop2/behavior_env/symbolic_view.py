@@ -269,6 +269,28 @@ def render_symbolic_view(
     held = _holding(observation)
     lines.append(f"Holding: {held.entity_id} ({held.category})" if held else "Holding: nothing")
 
+    # What can be done to a thing belongs on the line that names the thing.
+    # These used to be two sections, so every object appeared twice -- once
+    # under its room and again under "You can do:" -- and in a hall with 34
+    # spotlights and 9 chairs that doubled the longest part of the prompt while
+    # forcing the reader to join the two lists by id.
+    hints = target_hints(observation, interaction_radius=interaction_radius,
+                         include_structural=include_structural)
+    verbs_for: Dict[str, str] = {}
+    note_for: Dict[str, str] = {}
+    by_target: Dict[str, List[ActionHint]] = {}
+    for hint in hints:
+        by_target.setdefault(hint.target_id, []).append(hint)
+    for target_id, target_hint_list in by_target.items():
+        primitives = {h.primitive for h in target_hint_list}
+        # Status words first, then the verbs. Sorting alphabetically put
+        # "unreachable" after "navigate_to" and "blocked" before it, so the
+        # two lines that mean opposite things looked alike at a glance.
+        status = [word for word in ("unreachable", "blocked") if word in primitives]
+        verbs_for[target_id] = ", ".join(status + sorted(primitives - set(status)))
+        note_for[target_id] = next((h.note for h in target_hint_list if h.note), "")
+
+    printed: set = set()
     for room, entities in sorted(observation.by_room().items(), key=lambda kv: (kv[0] is None, kv[0] or "")):
         visible = [e for e in entities if not e.is_robot or e.name != observation.agent_id]
         if not include_structural:
@@ -285,6 +307,11 @@ def render_symbolic_view(
             active = [name for name, value in sorted(entity.states.items()) if value]
             if active:
                 bits.append(", ".join(active))
+            if entity.entity_id in verbs_for:
+                bits.append(f"-> {verbs_for[entity.entity_id]}")
+                if note_for[entity.entity_id]:
+                    bits.append(f"[{note_for[entity.entity_id]}]")
+                printed.add(entity.entity_id)
             lines.append("  - " + "  ".join(bits))
 
     shown_ids = {e.entity_id for e in observation.entities.values() if include_structural or not is_structural(e)}
@@ -296,21 +323,16 @@ def render_symbolic_view(
         if len(facts) > max_facts:
             lines.append(f"  ... and {len(facts) - max_facts} more")
 
-    hints = target_hints(observation, interaction_radius=interaction_radius, include_structural=include_structural)
-    if hints:
-        lines.append("\nYou can do:")
-        by_target: Dict[str, List[ActionHint]] = {}
-        for hint in hints:
-            by_target.setdefault(hint.target_id, []).append(hint)
-        for target_id, target_hint_list in sorted(by_target.items()):
-            primitives = {h.primitive for h in target_hint_list}
-            # Status words first, then the verbs. Sorting alphabetically put
-            # "unreachable" after "navigate_to" and "blocked" before it, so the
-            # two lines that mean opposite things looked alike at a glance.
-            status = [word for word in ("unreachable", "blocked") if word in primitives]
-            verbs = ", ".join(status + sorted(primitives - set(status)))
-            note = next((h.note for h in target_hint_list if h.note), "")
-            lines.append(f"  {target_id}: {verbs}" + (f"   [{note}]" if note else ""))
+    # Anything the room listing did not carry. A target the agent holds is the
+    # usual one -- it is out of every room -- and dropping it would hide the
+    # only verb that puts it down.
+    orphans = sorted(set(verbs_for) - printed)
+    if orphans:
+        lines.append("\nAlso available:")
+        for target_id in orphans:
+            note = note_for[target_id]
+            lines.append(f"  {target_id}: {verbs_for[target_id]}"
+                         + (f"   [{note}]" if note else ""))
 
     if observation.last_error:
         lines.append(f"\nLast action failed: {observation.last_error}")
