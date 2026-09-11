@@ -417,7 +417,21 @@ def _ensure_task_terminal_action(task_spec: TaskSpecification, actions: List[Sym
     BEHAVIOR equivalent is per predicate: ``ontop``/``inside`` need a place,
     ``open``/``closed``/``toggled_on`` need the matching toggle, ``holding``
     needs a grasp.
+
+    A plan that only waits is exempt, because there the missing action is the
+    decision. Asked to plan for a team whose apples were all claimed, the model
+    answered ``[wait(600)]`` four times over with "wait rather than duplicate
+    their targets" -- and the append turned each one into ``wait, place_on_top``
+    and a PRE_CONDITION failure for placing with an empty gripper. Thirteen
+    plans in centralized_agents12_..._045959 were logged failed that way. An
+    empty action list is still the omission this guard is for and still gets
+    its terminal action.
     """
+    if actions and all(
+        action.action_type in ("wait", "share", "release") for action in actions
+    ):
+        return
+
     token = str(getattr(task_spec.task, "value", task_spec.task) or "").lower()
     target = task_spec.object_type
     reference = getattr(task_spec, "reference", None)
