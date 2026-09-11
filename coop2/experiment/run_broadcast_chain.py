@@ -185,6 +185,12 @@ def run_broadcast_chain_experiment(
         print(f"  Goal: {goal_instruction}")
         for _agent in agents.values():
             _agent.goal_instruction = goal_instruction
+            # And on the brain: a team builds its own prompt from its own copy,
+            # so setting only the agents' attribute leaves the team planning
+            # with no objective -- which is how centralized ran for a while.
+            _brain = getattr(_agent, "brain", None)
+            if _brain is not None:
+                _brain.goal_instruction = goal_instruction
     
     # Wrap with planning environment
     plan_env = PlanningEnvWrapper(

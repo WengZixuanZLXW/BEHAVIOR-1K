@@ -51,6 +51,7 @@ class StubClient:
         self.plan_calls = 0
         self.interrupt_calls = 0
         self.last_prompt = None
+        self.last_interrupt_prompt = None
         self.interrupt_script = {}
 
     def _members_in(self, messages):
@@ -75,6 +76,10 @@ class StubClient:
 
     def generate_team_interrupt_decision(self, messages, temperature=0.7):
         self.interrupt_calls += 1
+        # Recorded here too, or an assertion about the interrupt prompt reads
+        # whatever the last *plan* prompt was and passes for the wrong reason.
+        self.last_prompt = messages[-1]["content"]
+        self.last_interrupt_prompt = messages[-1]["content"]
         decisions = []
         for name in self._members_in(messages):
             choice = self.interrupt_script.get(name, InterruptDecision.RESUME)
@@ -457,6 +462,44 @@ def main() -> int:
     assert elapsed < 2.0, f"took {elapsed:.1f}s -- it waited on the timeout again"
     assert client.interrupt_calls == 1, client.interrupt_calls
     ok("three interrupted members decide without the one still reasoning")
+
+    print("test 14: the objective reaches the team's own prompt, on every path")
+    # The team brain builds its own prompt from its own copy of the objective,
+    # so setting the attribute on the agents does not reach it. run_centralized
+    # passed the goal to the agents and not to the factory, and its teams
+    # planned with no objective at all -- 0 prompts carrying one, against 7 for
+    # broadcast_chain on the same task.
+    client, agents, ids = make_team(2)
+    for name in ids:
+        agents[name].plan = None
+    for name in ids:
+        agents[name].handle_reasoning()
+    plan_prompt = client.last_prompt
+    assert "GLOBAL OBJECTIVE: do the thing" in plan_prompt, (
+        "a team planned without being told what the run is for"
+    )
+
+    # And on the interrupt prompt, which is a different builder.
+    from coop2.cognitive.agent.agent import AgentState
+    for name in ids:
+        agents[name]._set_state(AgentState.I, timestamp=0.0, env_step=0)
+    threads = [threading.Thread(target=agents[name].handle_interrupt) for name in ids]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    interrupt_prompt = client.last_interrupt_prompt
+    assert interrupt_prompt is not None, "the interrupt prompt was never recorded"
+    assert "GLOBAL OBJECTIVE: do the thing" in interrupt_prompt, (
+        "the resume/replan call did not know the objective either"
+    )
+    # A brain with no objective must not print a stray header.
+    brain = agents[ids[0]].brain
+    brain.goal_instruction = ""
+    assert "GLOBAL OBJECTIVE" not in brain._build_team_prompt(
+        [agents[name] for name in ids]
+    )[-1]["content"]
+    ok("plan and interrupt prompts both carry the objective, and omit it when unset")
 
     print("\nALL TESTS PASSED")
     return 0

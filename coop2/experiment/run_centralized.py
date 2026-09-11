@@ -71,6 +71,7 @@ def create_centralized_llm_agents(
     temperature: float = 0.7,
     verbose: bool = True,
     team_layout=None,
+    goal_instruction: str = "",
 ) -> Dict[str, 'BaseLLMAgent']:
     """
     Create agents for centralized topology with LLM capabilities.
@@ -82,6 +83,10 @@ def create_centralized_llm_agents(
         llm_client: LLM client for API calls
         temperature: LLM sampling temperature
         verbose: Whether to print verbose output
+        goal_instruction: The run's objective. A team brain builds its own
+            prompt, so it needs its own copy -- setting the attribute on the
+            agents does not reach it, which is how centralized ran without an
+            objective at all while the other two carried one.
     
     Returns:
         Dict mapping agent_id to agent instance
@@ -92,6 +97,7 @@ def create_centralized_llm_agents(
         topology="centralized",
         temperature=temperature,
         verbose=verbose,
+        goal_instruction=goal_instruction,
     )
 
 
@@ -226,6 +232,7 @@ def run_centralized_experiment(
         temperature=0.7,
         verbose=verbose,
         team_layout=team_layout,
+        goal_instruction=goal_instruction,
     )
 
     # Every agent plans against the same objective. BaseLLMAgent prepends it to
@@ -235,6 +242,12 @@ def run_centralized_experiment(
         print(f"  Goal: {goal_instruction}")
         for _agent in agents.values():
             _agent.goal_instruction = goal_instruction
+            # And on the brain: a team builds its own prompt from its own copy,
+            # so setting only the agents' attribute leaves the team planning
+            # with no objective -- which is how centralized ran for a while.
+            _brain = getattr(_agent, "brain", None)
+            if _brain is not None:
+                _brain.goal_instruction = goal_instruction
     
     # Wrap with planning environment
     plan_env = PlanningEnvWrapper(

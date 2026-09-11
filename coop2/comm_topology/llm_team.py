@@ -108,6 +108,18 @@ TEAM_HOLD_TICKS = 60
 #: member of a team in the same call, so they arrive within milliseconds.
 INTERRUPT_BARRIER_TIMEOUT = 30.0
 
+#: How long a leader waits for its followers' status reports before planning
+#: without them.
+#:
+#: The wait is safe to make blocking -- which it was not before -- because a
+#: reply costs neither an env step nor an LLM call: it is a status report
+#: assembled from the team's own state, and it is sent from the interrupt path,
+#: so a follower answers while still in I. Every state a follower team can be in
+#: can answer without the world advancing: interrupted members answer from
+#: `on_interrupt`, a team already at its own barrier answers from `before_plan`.
+#: So this is a backstop, not the mechanism.
+LEADER_REPLY_TIMEOUT = 30.0
+
 #: How long a member waits in R for a team call that is already under way,
 #: before giving up and holding. Long, because it is bounding an LLM call that
 #: nothing else can rescue, and the alternative to waiting is showing this robot
@@ -150,6 +162,10 @@ class TeamBrain:
         #: Set when a member enters reasoning, cleared when it takes its new
         #: plan -- so it stays set across the holds a member takes meanwhile.
         self._awaiting: set = set()
+        # (sender, timestamp) of the leader requests this team has already
+        # reported against, so the interrupt path and the planning path cannot
+        # both answer the same question.
+        self._answered: set = set()
         #: Plans produced by the last team call, drained by their owners.
         self._pending_plans: Dict[str, SymbolicPlan] = {}
         #: Members that have been told they may hold this round and have not yet
@@ -199,6 +215,16 @@ class TeamBrain:
 
     def after_plan(self) -> None:
         """Communication that follows from the plan. Default: none."""
+
+    def on_interrupt(self, messages: List[Dict]) -> None:
+        """Called as a member reaches the interrupt barrier, before deciding.
+
+        The follower role answers its leader from here, which is what lets the
+        leader block for the reply: answering needs neither an env step nor an
+        LLM call, so a follower can do it while still in I. Called with
+        ``_lock`` held, once per arriving member, so an override has to be
+        idempotent within a round.
+        """
 
     def _collect_heard(self) -> None:
         """Drain every member's inbox into the team's shared record.
@@ -584,6 +610,10 @@ class TeamBrain:
             # File first, unconditionally: these came off the member's inbox and
             # this is their only remaining route into the team's record.
             self._file_heard(messages)
+            # Then answer, before the decision call rather than after it: a
+            # leader blocked on this reply must not be made to wait for the
+            # follower's own LLM round trip.
+            self.on_interrupt(messages)
 
             if agent_id in self._pending_decisions:
                 self._interrupted.discard(agent_id)
@@ -818,7 +848,45 @@ class LeaderTeamBrain(TeamBrain):
             "leader_broadcast",
             interrupts=True,
         )
-        self._await_speakers()
+        self._await_replies()
+
+    def _await_replies(self, timeout: float = LEADER_REPLY_TIMEOUT) -> None:
+        """Block until every follower team has reported, then plan.
+
+        This replaces `_await_speakers`, whose escape hatch -- give up as soon
+        as the teams waited on merely *look* ready -- made "ask, then plan"
+        into "ask, then plan without the answer". Measured before this: of
+        seven requests the leader sent, three of its plans carried a reply.
+
+        Blocking is safe here and was not before, because the reply no longer
+        waits for the follower's next planning barrier: a follower answers from
+        `on_interrupt`, while still in I, and a status report costs neither an
+        env step nor an LLM call. Every state a follower team can be in can
+        answer without the world advancing -- interrupted members answer from
+        `on_interrupt`, a team already at its own barrier answers from its
+        `before_plan` -- so nothing here is waiting on something that needs the
+        world, which is the shape that deadlocks.
+        """
+        if not self.wait_for:
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            self._collect_heard()
+            silent = [team for team in self.wait_for if not self._replied(team)]
+            if not silent:
+                return
+            if time.monotonic() >= deadline:
+                print(f"  [{self.team_name}] waited {timeout:.0f}s for {silent}; "
+                      "planning without them")
+                return
+            time.sleep(0.05)
+
+    def _replied(self, team: str) -> bool:
+        return any(
+            message.get("sender") == team
+            and (message.get("metadata") or {}).get("type") == "follower_response"
+            for message in self._heard
+        )
 
 
 class FollowerTeamBrain(TeamBrain):
@@ -829,25 +897,45 @@ class FollowerTeamBrain(TeamBrain):
     brain already has would double this topology's cost for nothing.
     """
 
+    def on_interrupt(self, messages: List[Dict]) -> None:
+        """Answer the leader the moment its request lands.
+
+        This is the path that matters: the request interrupts, so a follower is
+        in I within microseconds of being asked, and answering from here means
+        the leader gets its reply in the same instant rather than waiting for
+        the follower's next planning barrier -- which was hundreds of env steps
+        away, and which the leader was blocking the world for.
+
+        Costs nothing that needs the world: the report is assembled from the
+        team's own state, so no env step and no LLM call.
+        """
+        self._answer_leader()
+
     def before_plan(self) -> None:
+        # Still needed, and not a duplicate: a follower team that was already at
+        # its own planning barrier when the request arrived was in R, which the
+        # broker does not interrupt, so `on_interrupt` never fired for it. That
+        # is the case the run's first round is always in.
         if not self._was_asked():
-            self._await_speakers()
             self._collect_heard()
-        if not self._was_asked():
-            # No request this round, so there is nothing to answer. Replying
-            # anyway is what put a follower_response on the wire in the same
-            # instant as -- and sometimes before -- the leader's request:
-            # `_await_speakers` gives up as soon as the leader merely *looks*
-            # ready, which at the start of a run it does. That escape cannot be
-            # removed (a follower blocked in R freezes the world, and the leader
-            # needs the world to advance before it plans and asks), so the fix
-            # is to stay silent rather than to answer a question nobody asked.
+        self._answer_leader()
+
+    def _answer_leader(self) -> None:
+        """Report once per request, from whichever path gets there first."""
+        pending = [
+            message for message in self._heard
+            if (message.get("metadata") or {}).get("type") == "leader_broadcast"
+            and (message.get("sender"), message.get("timestamp")) not in self._answered
+        ]
+        if not pending:
             return
-        # Not an interrupt in either direction. The leader asked for this and is
-        # blocked in its own planning barrier waiting for it, so interrupting it
-        # is incoherent -- and it cannot even be done uniformly, because the
-        # members inside that barrier are in R and R is not interruptible, so
-        # the team would split. It is delivered and read when the leader plans.
+        for message in pending:
+            self._answered.add((message.get("sender"), message.get("timestamp")))
+        # Not an interrupt in the other direction: the leader asked for this and
+        # is blocked in its own planning barrier waiting for it, so interrupting
+        # it is incoherent -- and could not be done uniformly anyway, because
+        # the members inside that barrier are in R and R is not interruptible,
+        # so the team would split.
         self._say(
             self._status_report(), "follower_response",
             interrupts=False, expected_reply=True,
