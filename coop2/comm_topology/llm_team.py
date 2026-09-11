@@ -134,6 +134,11 @@ TEAM_VERBOSE = bool(os.environ.get("COOP2_TEAM_VERBOSE"))
 
 INTERRUPT_BARRIER_TIMEOUT = 30.0
 
+#: How long a chain team waits for the team ahead of it to relay before making
+#: its own interrupt decision. A backstop only: the normal exit is the relay
+#: arriving, or the team ahead turning out to have no open round.
+CHAIN_RELAY_TIMEOUT = 30.0
+
 #: How long a leader waits for its followers' status reports before planning
 #: without them.
 #:
@@ -252,6 +257,13 @@ class TeamBrain:
         self.all_teams: Dict[str, List[str]] = {}
         #: Every agent in the run, for the readiness check the ordering uses.
         self.all_agents: Dict[str, Any] = {}
+        #: The other teams' brains, by name. A chain team has to know whether
+        #: the team ahead of it is inside an interrupt round of its own -- if it
+        #: is, a relay is coming and waiting is right; if it is not, none is
+        #: coming and waiting would freeze the world for the full timeout.
+        #: Readiness cannot answer that: a team ahead that is *executing* is
+        #: ready, and ready is what the old ordering took as "it has spoken".
+        self.peers: Dict[str, "TeamBrain"] = {}
         #: What this team heard since it last planned, folded into its prompt.
         self._heard: List[Dict] = []
         #: When the team itself was thinking. Recorded first-hand: the team is
@@ -276,15 +288,26 @@ class TeamBrain:
     def after_plan(self) -> None:
         """Communication that follows from the plan. Default: none."""
 
-    def after_replan(self, plans: Dict[str, SymbolicPlan]) -> None:
-        """Communication that follows a replan made on the interrupt path.
+    def before_interrupt_decision(self, messages: List[Dict]) -> List[Dict]:
+        """Runs once per interrupt round, before the model is asked.
+
+        Returns the messages the decision is made on: @messages, plus anything
+        the hook waited for. Called holding no lock and outside the barrier, so
+        an override may block -- which is the point, it is where an ordered
+        topology makes a team wait its turn. Default: unchanged.
+        """
+        return messages
+
+    def after_interrupt(self, decisions: Dict[str, Any]) -> None:
+        """Communication that follows the team's interrupt decision.
 
         Upstream's handle_interrupt is `self._execute_flow()` -- the same flow
-        as reasoning, communication included -- so a replan there is announced
-        exactly as a fresh plan is. This port's team layer decided per robot and
-        said nothing, so a chain team could replan and the team after it kept
-        working against the allocation from the round before. Default: none, for
-        the roles that do not announce plans.
+        as reasoning, communication included -- so what a team decides there is
+        announced exactly as a fresh plan is. It takes the whole decision map
+        and not only the replanned robots, because in an ordered topology the
+        successor is *waiting* for this message: a team that resumed every robot
+        still has to say so, or the team behind it waits out its timeout for a
+        message that was never going to come. Default: none.
         """
 
     def on_interrupt(self, messages: List[Dict]) -> None:
@@ -304,10 +327,7 @@ class TeamBrain:
         second call simply finds nothing, and what the first call took is still
         in ``_heard`` for the prompt.
         """
-        seen = {
-            (m.get("sender"), m.get("timestamp"), str(m.get("content")))
-            for m in self._heard
-        }
+        seen = {self._message_key(m) for m in self._heard}
         for name in self.member_ids:
             member = self.members.get(name)
             if member is None:
@@ -317,12 +337,17 @@ class TeamBrain:
                 # into every member's inbox -- an interrupt has to stop all of
                 # them -- so draining four inboxes yields the same message four
                 # times, and the prompt quoted it four times.
-                key = (message.get("sender"), message.get("timestamp"),
-                       str(message.get("content")))
+                key = self._message_key(message)
                 if key in seen:
                     continue
                 seen.add(key)
                 self._heard.append(message)
+
+    @staticmethod
+    def _message_key(message: Dict):
+        """Identity of a message, for de-duping and for round scoping."""
+        return (message.get("sender"), message.get("timestamp"),
+                str(message.get("content")))
 
     def _file_heard(self, messages: List[Dict]) -> None:
         """Record messages already taken off a member's inbox.
@@ -752,7 +777,23 @@ class TeamBrain:
                 return self._decide_and_publish(agent_id, messages)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
               f"to be interrupted and it never completed; resuming")
+        with self._barrier_lock:
+            # Close the round even though nothing was decided. A team waiting on
+            # this one reads `has_open_interrupt_round`, and a round left open
+            # here would make it wait out its own backstop every round after.
+            self._interrupt_opened = None
         return None
+
+    def has_open_interrupt_round(self) -> bool:
+        """Has this team been interrupted and not yet published its decision?
+
+        `_interrupt_opened` is stamped by `expect_interrupt`, which the broker
+        calls for every addressed team *before* it stops anybody, and cleared by
+        `_decide_and_publish`. So between those two points the answer is yes,
+        and a team waiting on this one knows a message is still coming.
+        """
+        with self._barrier_lock:
+            return self._interrupt_opened is not None
 
     def _claim_decision(self) -> bool:
         """May this member make the call? True for exactly one per round.
@@ -774,6 +815,9 @@ class TeamBrain:
             print(f"  [barrier {self.team_name}] {agent_id} CLOSES and decides "
                   f"(expected={sorted(self._expected_interrupt)} "
                   f"arrived={sorted(self._interrupted)})")
+        # Before the model call and outside every lock, because an ordered
+        # topology waits here -- see `before_interrupt_decision`.
+        messages = self.before_interrupt_decision(messages)
         started = time.time()
         decisions = self._decide_interrupts(messages)
         with self._barrier_lock:
@@ -787,10 +831,20 @@ class TeamBrain:
                 if self._interrupt_opened is not None else started,
                 "end": time.time(),
             })
-            self._interrupt_opened = None
             self._decided.set()
             mine = self._pending_decisions.pop(agent_id, None)
-        self._announce_replans(decisions)
+        self.after_interrupt(decisions)
+        with self._barrier_lock:
+            # Closed only now, after the announcement has actually gone out.
+            # Per robot the ordering comes for free -- upstream broadcasts in
+            # step 4 of `_execute_flow` and `create_agent_thread` calls
+            # `set_ready()` only once the handler returns, so speaking strictly
+            # precedes going ready. A team inverts that: `_decided.set()` above
+            # releases four members, who go ready while `after_interrupt` has
+            # not sent yet. Anything reading "is that team still going to
+            # speak?" in that window would be told no and would be wrong, so the
+            # round stays open across the send.
+            self._interrupt_opened = None
         return mine
 
     def expect_interrupt(self, names: List[str]) -> None:
@@ -848,15 +902,6 @@ class TeamBrain:
             }
             expected |= self._interrupted
         return [name for name in expected if name not in self._interrupted]
-
-    def _announce_replans(self, decisions: Dict[str, Any]) -> None:
-        """Hand the replanned robots to `after_replan`. Holds no lock: it sends."""
-        replanned = {
-            name: plan for name, (choice, plan) in decisions.items()
-            if choice is InterruptDecision.REPLAN and plan is not None
-        }
-        if replanned:
-            self.after_replan(replanned)
 
     def _decide_interrupts(self, messages: List[Dict]) -> Dict[str, Any]:
         members = [self.members[name] for name in self.member_ids if name in self.members]
@@ -996,12 +1041,100 @@ class ChainTeamBrain(TeamBrain):
         if self._pending_plans:
             self._say(self._plan_summary(self._pending_plans), "broadcast_chain", interrupts=True)
 
-    def after_replan(self, plans: Dict[str, SymbolicPlan]) -> None:
-        # Same announcement as after_plan, for plans made on the interrupt path.
-        # Without it a chain team could replan and the team after it went on
-        # working against the allocation from the round before -- which is the
-        # one thing this topology exists to prevent.
-        self._say(self._plan_summary(plans), "broadcast_chain", interrupts=True)
+    def before_interrupt_decision(self, messages: List[Dict]) -> List[Dict]:
+        """Wait for the team ahead to relay, then decide knowing what it said.
+
+        One message from one team interrupts *every* team behind it -- that is
+        the broadcast -- so without this they all decide at once and only the
+        first of them decides on anything new. Measured on
+        broadcast_chain_agents12_..._064820: team_0 spoke at t=183.28, team_1
+        and team_2 both went to I in the same instant, team_2 finished deciding
+        at 191.58, and team_1 did not relay until 235.14. team_2's decision was
+        44 s older than the information it was supposed to be ordered behind.
+
+        Blocking here is safe in a way it is not on the planning path. Every
+        team behind the sender is already in I, so none of them needs the world
+        to advance: the team ahead has to reach its own barrier -- its members
+        are stopped, so it is already there -- make one model call, and speak.
+        A frozen env is exactly what all of them are doing anyway.
+
+        Three exits, and the timeout is the one that should never fire: the
+        relay arrives; or the team ahead turns out to have no open round, so no
+        relay is coming (it was in R, which the broker does not interrupt); or
+        the backstop.
+        """
+        relayed = self._await_relay()
+        return list(messages) + relayed if relayed else messages
+
+    def after_interrupt(self, decisions: Dict[str, Any]) -> None:
+        """Relay onward, whatever this team decided.
+
+        Exactly once per round and after the decision, so the summary is what
+        the robots will actually do. Resume counts: a team that changed nothing
+        still has to say so, or the team behind it waits out `before_interrupt_
+        decision` for a message that was never coming -- which is the difference
+        between an ordering and a stall. This is also why it reports every
+        robot's current plan rather than only the replanned ones.
+        """
+        self._say(self._current_allocation(), "broadcast_chain", interrupts=True)
+
+    # -- ordering ----------------------------------------------------------
+
+    def _await_relay(self, timeout: float = CHAIN_RELAY_TIMEOUT) -> List[Dict]:
+        """The upstream team's message for this round, waited for if need be."""
+        if not self.wait_for or not self.has_open_interrupt_round():
+            return []
+        upstream = set(self.wait_for)
+        # What "this round" means, without a clock. The obvious version -- take
+        # messages stamped after the round opened -- cannot work: the broker
+        # writes timestamps relative to the run's origin and `_interrupt_opened`
+        # is an absolute `time.time()`, so the comparison is a few seconds
+        # against 1.7e9 and is false forever. Fingerprinting what was already in
+        # hand has no clock in it at all.
+        self._collect_heard()
+        already = {self._message_key(m) for m in self._heard
+                   if m.get("sender") in upstream}
+        deadline = time.monotonic() + timeout
+        while True:
+            self._collect_heard()
+            relayed = [m for m in self._heard
+                       if m.get("sender") in upstream
+                       and self._message_key(m) not in already]
+            if relayed:
+                return relayed
+            if not self._upstream_will_speak():
+                if TEAM_VERBOSE:
+                    print(f"  [chain {self.team_name}] {self.wait_for} has no open "
+                          "round; deciding without a relay")
+                return []
+            if time.monotonic() >= deadline:
+                print(f"  [{self.team_name}] waited {timeout:.0f}s for {self.wait_for} "
+                      "to relay; deciding without it")
+                return []
+            time.sleep(0.05)
+
+    def _upstream_will_speak(self) -> bool:
+        """Is a team this one waits on inside an interrupt round of its own?
+
+        The question readiness could not answer. A team ahead that is executing
+        is `ready`, and the old ordering read that as "it has already said what
+        it was going to say" -- true of the round it announced long ago, not of
+        this one.
+        """
+        return any(
+            peer is not None and peer.has_open_interrupt_round()
+            for peer in (self.peers.get(name) for name in self.wait_for)
+        )
+
+    def _current_allocation(self) -> str:
+        """One line per robot, from the plan it holds right now."""
+        parts = []
+        for name in self.member_ids:
+            member = self.members.get(name)
+            plan = getattr(member, "plan", None) if member is not None else None
+            if plan is not None:
+                parts.append(f"{name}: {plan.specification}")
+        return f"[{self.team_name}] " + ("; ".join(parts) if parts else "no active plans")
 
 
 class LeaderTeamBrain(TeamBrain):
@@ -1429,6 +1562,9 @@ def create_llm_team_topology(
     for brain in brains.values():
         brain.all_agents = agents
         brain.all_teams = {name: list(teams[name]) for name in names}
+        # Its own entry included: harmless, and leaving it out would make the
+        # map mean something different depending on who is reading it.
+        brain.peers = dict(brains)
     for agent in agents.values():
         # Mirrors of the brain's wiring, in team names. Nothing in the team path
         # reads them -- the brain does all the waiting and sending -- but they

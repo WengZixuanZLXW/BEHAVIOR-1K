@@ -236,6 +236,26 @@ class LLMClient:
     Takes messages and a response format, returns structured response.
     """
     
+    #: Seconds a single call may take before the SDK gives up. A hanging call
+    #: does not stall one agent, it stalls the simulation: R freezes the env, so
+    #: every robot stands still until the call returns. One Team Plan Generation
+    #: in individual_agents12_..._060731 spent its whole 128k completion budget
+    #: on reasoning tokens, emitted nothing parseable, and took 552 s -- 42 % of
+    #: that run's wall clock, during which env_step went 3119 -> 3120. The
+    #: healthy calls in the same run averaged 7.3 s and the slowest was 10.6 s,
+    #: so this is ~10x the worst good call. Timing out raises, which lands on the
+    #: same path as any other LLM failure: the hold-position fallback, and the
+    #: agent asks again next round with the world having moved.
+    #:
+    #: The SDK's own ``max_retries`` is turned off wherever this is applied, or
+    #: the bound is not a bound: the timeout is per attempt, so the default 2
+    #: retries make 100 s mean 300 s of frozen simulation. Losing those retries
+    #: costs little here -- ``generate`` has its own rate-limit loop, and a
+    #: transient failure now spends one planning round on the hold-position
+    #: fallback, which is itself a retry, and one that lets the world move in
+    #: between instead of freezing it.
+    REQUEST_TIMEOUT_SECONDS = 100.0
+
     # Backends that support OpenAI's structured output (beta.chat.completions.parse)
     STRUCTURED_OUTPUT_BACKENDS = {"azure"}
     JSON_MODE_BACKENDS = {"deepseek"}
@@ -249,6 +269,7 @@ class LLMClient:
         backend: str = "azure",  # "azure", "foundry", or "deepseek"
         base_url: Optional[str] = None,
         verbose: bool = False,  # Print API calls and responses
+        timeout: Optional[float] = None,
     ):
         """
         Initialize LLM client.
@@ -261,29 +282,37 @@ class LLMClient:
             backend: Backend type ("azure", "foundry", or "deepseek")
             base_url: Custom base URL for OpenAI-compatible backends
             verbose: If True, print API calls and responses for debugging
+            timeout: Seconds per request; defaults to REQUEST_TIMEOUT_SECONDS
         """
         self.model = model
         self.backend = backend.lower()
         self.verbose = verbose
+        self.timeout = self.REQUEST_TIMEOUT_SECONDS if timeout is None else timeout
         
         if self.backend == "azure":
             # Azure OpenAI
             self.client = AzureOpenAI(
                 azure_endpoint=azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT"),
                 api_key=api_key or os.getenv("AZURE_OPENAI_API_KEY"),
-                api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview")
+                api_version=api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2024-12-01-preview"),
+                timeout=self.timeout,
+                max_retries=0,
             )
         elif self.backend == "deepseek":
             # DeepSeek via OpenAI-compatible API
             self.client = OpenAI(
                 base_url=base_url or os.getenv("DEEPSEEK_ENDPOINT"),
-                api_key=api_key or os.getenv("DEEPSEEK_API_KEY")
+                api_key=api_key or os.getenv("DEEPSEEK_API_KEY"),
+                timeout=self.timeout,
+                max_retries=0,
             )
         elif self.backend == "foundry":
             # Azure AI Foundry via OpenAI-compatible API
             self.client = OpenAI(
                 base_url=base_url or os.getenv("AZURE_FOUNDRY_ENDPOINT"),
-                api_key=api_key or os.getenv("AZURE_FOUNDRY_API_KEY")
+                api_key=api_key or os.getenv("AZURE_FOUNDRY_API_KEY"),
+                timeout=self.timeout,
+                max_retries=0,
             )
         else:
             raise ValueError(f"Unknown backend: {backend}. Use 'azure', 'foundry', or 'deepseek'.")

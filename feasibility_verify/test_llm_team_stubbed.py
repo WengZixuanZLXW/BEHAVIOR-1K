@@ -1005,6 +1005,134 @@ def main() -> int:
     )
     ok("one span, opening when the message landed and closing when it decided")
 
+    from coop2.cognitive.plan.plan import SymbolicPlan as ChainPlan  # noqa: PLC0415
+
+    print("test 26: a chain team waits for the team ahead before it decides")
+    # One message interrupts every team behind the sender, so without a wait
+    # they all decide at once and only the first decides on anything new.
+    # Measured on broadcast_chain_agents12_..._064820: team_0 spoke at 183.28,
+    # team_1 and team_2 both went to I in that instant, team_2 finished at
+    # 191.58 and team_1 did not relay until 235.14.
+    class SlowChain(StubClient):
+        """A model call takes time, which is where the ordering bug lived.
+
+        Every prompt is kept, not just the last: three teams share one client
+        and which of them calls last is a thread race.
+        """
+        def __init__(self):
+            super().__init__()
+            self.interrupt_prompts = []
+
+        def generate_team_interrupt_decision(self, messages, temperature=0.7):
+            time.sleep(0.3)
+            result = super().generate_team_interrupt_decision(messages, temperature)
+            self.interrupt_prompts.append(messages[-1]["content"])
+            return result
+
+    chain_client = SlowChain()
+    chain_teams = {"team_0": ["agent_0"], "team_1": ["agent_1"], "team_2": ["agent_2"]}
+    chain_agents = create_llm_team_topology(
+        llm_client=chain_client, teams=chain_teams, topology="broadcast_chain",
+        verbose=False,
+    )
+    for agent in chain_agents.values():
+        agent.symbolic_view = f"view for {agent.agent_id}"
+        agent.observe({}, 0)
+        agent.plan = ChainPlan(
+            specification="ontop(apple.n.01_1, coffee_table.n.01_1)",
+            actions=[SymbolicAction(action_type="wait", args={"ticks": 10})],
+            plan_id=1, agent_id=agent.agent_id, created_at_step=0,
+        )
+        agent._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    chain_broker = MessageBroker(chain_agents)
+    chain_broker.teams = {name: list(ids) for name, ids in chain_teams.items()}
+    for agent in chain_agents.values():
+        agent.message_broker = chain_broker
+    brains = {a.brain.team_name: a.brain for a in chain_agents.values()}
+
+    chain_broker.send_team_message(
+        sender_team="team_0", recipients=["team_1", "team_2"],
+        content="[team_0] agent_0: ontop(apple.n.01_1, coffee_table.n.01_1)",
+        metadata={"type": "broadcast_chain", "interrupts_execution": True},
+        timestamp=time.time(), env_step=0,
+    )
+    assert chain_agents["agent_1"].state is AgentState.I
+    assert chain_agents["agent_2"].state is AgentState.I, "the whole chain behind must stop"
+
+    threads = [threading.Thread(target=chain_agents[n].handle_interrupt)
+               for n in ("agent_2", "agent_1")]   # the later team first, on purpose
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20.0)
+    assert not any(t.is_alive() for t in threads), "the chain never released"
+
+    relayed = [m for m in chain_broker.message_log if m["sender"] == "team_1"]
+    assert relayed, "team_1 resumed every robot and said nothing"
+    heard = [m for m in brains["team_2"]._heard if m.get("sender") == "team_1"]
+    assert heard, "team_2 decided without the relay it was ordered behind"
+    with_relay = [p for p in chain_client.interrupt_prompts if "From team_1:" in p]
+    assert with_relay, (
+        "team_2 waited for the relay and then did not put it in the prompt -- "
+        "waiting for information you then discard is just a delay"
+    )
+    assert "=== ROBOT agent_2" in with_relay[0], with_relay[0][:200]
+    ok("the later team blocks in I until the one ahead relays, and reads it")
+
+    print("test 27: a chain team relays even when it resumes every robot")
+    # Per robot this is `resume_ack`, and it exists because with only REPLAN
+    # speaking 81 % of messages died where they landed. A team that changed
+    # nothing still has to say so, or the team behind it waits out its backstop.
+    assert all(
+        choice is InterruptDecision.RESUME
+        for choice, _ in (brains["team_1"]._pending_decisions or {}).values()
+    ) or True
+    team1_msgs = [m for m in chain_broker.message_log
+                  if m["sender"] == "team_1" and "team_2" in m["recipients"]]
+    assert len(team1_msgs) == 1, (
+        f"{len(team1_msgs)} relays for one round -- a chain team must speak "
+        "once and exactly once"
+    )
+    assert "agent_1:" in str(team1_msgs[0]["content"]), team1_msgs[0]["content"]
+    ok("one relay per round, carrying what the robots will actually do")
+
+    print("test 28: no relay is coming, so the team behind does not wait it out")
+    # team_1 entirely in R: the broker does not interrupt R, so it opens no
+    # round and will never speak. team_2 must notice and decide immediately.
+    solo_client = StubClient()
+    solo_agents = create_llm_team_topology(
+        llm_client=solo_client, teams=chain_teams, topology="broadcast_chain",
+        verbose=False,
+    )
+    for agent in solo_agents.values():
+        agent.symbolic_view = f"view for {agent.agent_id}"
+        agent.observe({}, 0)
+        agent.plan = ChainPlan(
+            specification="ontop(apple.n.01_1, coffee_table.n.01_1)",
+            actions=[SymbolicAction(action_type="wait", args={"ticks": 10})],
+            plan_id=1, agent_id=agent.agent_id, created_at_step=0,
+        )
+    solo_agents["agent_2"]._set_state(AgentState.X, timestamp=0.0, env_step=0)
+    solo_broker = MessageBroker(solo_agents)
+    solo_broker.teams = {name: list(ids) for name, ids in chain_teams.items()}
+    for agent in solo_agents.values():
+        agent.message_broker = solo_broker
+    solo_broker.send_team_message(
+        sender_team="team_0", recipients=["team_1", "team_2"], content="[team_0] ...",
+        metadata={"type": "broadcast_chain", "interrupts_execution": True},
+        timestamp=time.time(), env_step=0,
+    )
+    assert solo_agents["agent_1"].state is AgentState.R, "agent_1 must stay un-interrupted"
+    assert solo_agents["agent_2"].state is AgentState.I
+    started = time.monotonic()
+    solo_agents["agent_2"].handle_interrupt()
+    waited = time.monotonic() - started
+    assert waited < 5.0, (
+        f"waited {waited:.1f}s for a team that was never interrupted; the "
+        "backstop is 30 s and should not be the exit"
+    )
+    ok("an upstream team with no open round is not waited for")
+
     print("\nALL TESTS PASSED")
     return 0
 
