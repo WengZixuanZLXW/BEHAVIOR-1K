@@ -544,6 +544,99 @@ def main() -> int:
     )
     ok("four members, one announcement, one decision call")
 
+    print("test 16: a member that slipped out of W before its turn is not waited for")
+    # The announcement is a prediction from each recipient's state, and the
+    # state can change before the delivery loop reaches that recipient:
+    # interrupt() is a no-op from R. On
+    # centralized_agents8_..._021551 three members went W -> R in that window,
+    # only the fourth was really stopped, and it waited out the full 30 s for
+    # three that were never coming. The confirmation after the loop narrows the
+    # set to what actually happened.
+    client, agents, ids = make_team(4, name="charlie")
+    for name in ids:
+        agents[name].plan = None
+        agents[name]._set_state(AgentState.W, timestamp=0.0, env_step=0)
+    broker = MessageBroker(agents)
+    broker.teams = {"charlie": list(ids)}
+    for agent in agents.values():
+        agent.message_broker = broker
+
+    # Three of them leave W the instant the prediction has been taken -- which
+    # is what a real team does when its members reach their planning barrier.
+    real_announce = broker._announce_interrupts
+
+    def announce_then_slip(message_record, recipient_ids):
+        real_announce(message_record, recipient_ids)
+        for name in ids[:3]:
+            agents[name]._set_state(AgentState.R, timestamp=0.0, env_step=0)
+
+    broker._announce_interrupts = announce_then_slip
+    broker.send_team_message(
+        sender_team="outsider", recipients=["charlie"], content="status please",
+        metadata={"type": "leader_broadcast", "interrupts_execution": True},
+        timestamp=0.0, env_step=0,
+    )
+    brain = agents[ids[0]].brain
+    assert agents[ids[3]].state is AgentState.I, "the one still in W should be stopped"
+    assert all(agents[n].state is AgentState.R for n in ids[:3])
+    assert brain._expected_interrupt == {ids[3]}, (
+        f"expected narrowed to {brain._expected_interrupt}, not just the member stopped"
+    )
+
+    started = time.monotonic()
+    agents[ids[3]].handle_interrupt()
+    elapsed = time.monotonic() - started
+    assert elapsed < 2.0, f"took {elapsed:.1f}s -- it waited for the three that slipped"
+    assert client.interrupt_calls == 1, client.interrupt_calls
+    ok("only the member really stopped is waited for, and it decides at once")
+
+    print("test 17: a follower's report answers what the leader asked")
+    # It used to send only plan.specification, which answered none of the four
+    # things the request asks for and was `wait_for_team(...)` for most robots
+    # most of the time. The exchange read correctly in the log -- right senders,
+    # right addressing -- and carried nothing the leader could allocate on.
+    from coop2.comm_topology.llm_team import _first_useful_target, _read_view_header
+
+    view = (
+        "Step 0/2500 | you are agent_4 in empty_room_0 (a empty room)\n"
+        "Holding: apple.n.01_2\n"
+        "\nYou can do:\n"
+        "  apple.n.01_1: unreachable, navigate_to   [36.7 m away]\n"
+        "  coffee_table.n.01_1: place_on_top, navigate_to\n"
+    )
+    assert _read_view_header(view) == ("empty_room_0", "apple.n.01_2")
+    assert _first_useful_target(view) == "coffee_table.n.01_1 (in range)", (
+        "an object it can act on now must win over a nearer unreachable one"
+    )
+    # Out of range everywhere: report the closest, with its distance.
+    far = view.replace("  coffee_table.n.01_1: place_on_top, navigate_to\n",
+                       "  coffee_table.n.01_1: unreachable, navigate_to   [11.6 m away]\n")
+    assert _first_useful_target(far) == "coffee_table.n.01_1 (12 m away)"
+    assert _read_view_header(None) == ("", "") and _first_useful_target(None) == ""
+
+    # _status_report belongs to the follower role, so build a centralized pair.
+    client = StubClient()
+    agents = create_llm_team_topology(
+        llm_client=client, topology="centralized",
+        teams={"team_0": ["agent_0"], "team_1": ["agent_4", "agent_5"]},
+        verbose=False, goal_instruction="do the thing",
+    )
+    ids = ["agent_4", "agent_5"]
+    for name in ids:
+        agents[name].symbolic_view = view
+        agents[name].observe({}, 0)
+    follower = agents[ids[0]].brain
+    report = follower._status_report()
+    for wanted in ("in empty_room_0", "holding apple.n.01_2",
+                   "nearest target coffee_table.n.01_1 (in range)", "plan "):
+        assert wanted in report, f"the report does not say {wanted!r}: {report}"
+    assert ids[0] in report and ids[1] in report
+    # A holding robot is described as idle, not by the placeholder's name.
+    agents[ids[0]].plan = agents[ids[0]].build_hold_plan()
+    assert "idle, waiting for its team" in follower._status_report()
+    assert "wait_for_team" not in follower._status_report()
+    ok("room, held object, a reachable target and the plan -- all four, no LLM call")
+
     print("\nALL TESTS PASSED")
     return 0
 

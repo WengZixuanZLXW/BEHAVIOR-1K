@@ -59,8 +59,9 @@ code path.
 from __future__ import annotations
 
 import threading
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from coop2.cognitive.agent import LLMClient
 from coop2.cognitive.agent.base_llm_agent import BaseLLMAgent
@@ -620,7 +621,6 @@ class TeamBrain:
             self.on_interrupt(messages)
 
             if agent_id in self._pending_decisions:
-                self._interrupted.discard(agent_id)
                 return self._pending_decisions.pop(agent_id)
 
             self._interrupted.add(agent_id)
@@ -643,7 +643,6 @@ class TeamBrain:
                     {"kind": "deciding", "start": started, "end": time.time()}
                 )
                 self._decided.set()
-                self._interrupted.discard(agent_id)
                 return self._pending_decisions.pop(agent_id, None)
 
         # Not everyone has arrived. **Block here**, staying in I, rather than
@@ -657,7 +656,6 @@ class TeamBrain:
         while time.monotonic() < deadline:
             if self._decided.wait(timeout=0.05):
                 with self._lock:
-                    self._interrupted.discard(agent_id)
                     return self._pending_decisions.pop(agent_id, None)
             # A teammate this barrier was waiting for may have left I without
             # ever arriving -- it was never interrupted, or its own wait timed
@@ -670,12 +668,9 @@ class TeamBrain:
                         {"kind": "deciding", "start": started, "end": time.time()}
                     )
                     self._decided.set()
-                    self._interrupted.discard(agent_id)
                     return self._pending_decisions.pop(agent_id, None)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
               f"to be interrupted and it never completed; resuming")
-        with self._lock:
-            self._interrupted.discard(agent_id)
         return None
 
     def expect_interrupt(self, names: List[str]) -> None:
@@ -690,6 +685,19 @@ class TeamBrain:
             self._interrupted.clear()
             self._pending_decisions = {}
             self._decided.clear()
+
+    def confirm_interrupts(self, names: List[str]) -> None:
+        """Narrow the expected set to the members really stopped.
+
+        `expect_interrupt` runs before the delivery loop and is a prediction;
+        this runs after it and is the fact. Narrowing rather than replacing,
+        because a member that has already reached the barrier belongs in the
+        round whatever the predicate thought of it.
+        """
+        with self._lock:
+            if not self._expected_interrupt:
+                return
+            self._expected_interrupt = set(names) | set(self._interrupted)
 
     def _outstanding(self) -> List[str]:
         """Members this round is still waiting for.
@@ -975,15 +983,40 @@ class FollowerTeamBrain(TeamBrain):
         )
 
     def _status_report(self) -> str:
+        """Answer the four things the leader asks, for each robot.
+
+        It used to report only ``plan.specification``, which answered none of
+        them and was ``wait_for_team(...)`` for most robots most of the time --
+        so the leader allocated work having been told, in effect, "we were
+        idling". The exchange looked correct in the log and carried nothing.
+
+        Still assembled rather than generated: every field below is already in
+        the member's own observation, so this costs no LLM call, which is what
+        lets the leader block for the reply.
+        """
         parts = []
         for name in self.member_ids:
             member = self.members.get(name)
             if member is None:
                 continue
-            plan = member.plan
-            spec = plan.specification if plan is not None else "no plan"
-            parts.append(f"{name} was doing {spec}")
+            parts.append(f"{name} {self._member_status(member)}")
         return f"[{self.team_name}] " + "; ".join(parts)
+
+    def _member_status(self, member: "LLMTeamAgent") -> str:
+        room, holding = _read_view_header(member.symbolic_view)
+        plan = member.plan
+        spec = str(plan.specification) if plan is not None else "nothing"
+        if spec.startswith("wait_for_team"):
+            spec = "idle, waiting for its team"
+        bits = []
+        if room:
+            bits.append(f"in {room}")
+        bits.append(f"holding {holding or 'nothing'}")
+        target = _first_useful_target(member.symbolic_view)
+        if target:
+            bits.append(f"nearest target {target}")
+        bits.append(f"plan {spec}")
+        return ", ".join(bits)
 
 
 #: Which brain each topology uses for which team. `individual` is the plain
@@ -994,6 +1027,52 @@ TEAM_BRAIN_ROLES = {
     "broadcast_chain": "teams speak in order, each broadcasting to the later ones",
     "centralized": "the first team leads; the rest report to it",
 }
+
+
+def _read_view_header(view: Optional[str]) -> Tuple[str, str]:
+    """``(room, holding)`` out of an observation's first two lines.
+
+    The observation opens with
+    ``Step 0/2500 | you are agent_4 in empty_room_0 (a empty room)`` and
+    ``Holding: nothing``, so this is a header read, not a parse of the body.
+    """
+    room = holding = ""
+    for line in (view or "").split("\n")[:4]:
+        if not room:
+            match = re.search(r"\byou are \S+ in (\S+)", line)
+            if match:
+                room = match.group(1)
+        if line.startswith("Holding:"):
+            value = line.split(":", 1)[1].strip()
+            holding = "" if value in ("nothing", "") else value
+    return room, holding
+
+
+def _first_useful_target(view: Optional[str]) -> str:
+    """One target worth naming: something in range, else the closest thing.
+
+    Entries under ``You can do:`` read
+    ``apple.n.01_2: unreachable, navigate_to   [11.6 m away]`` when out of
+    range and carry no distance when the robot can already act on them, which
+    is exactly the distinction the leader wants reported.
+    """
+    lines = (view or "").split("\n")
+    try:
+        start = next(i for i, line in enumerate(lines) if line.startswith("You can do:"))
+    except StopIteration:
+        return ""
+    nearest, nearest_distance = "", float("inf")
+    for line in lines[start + 1:]:
+        if not line.startswith("  ") or ":" not in line:
+            break
+        name = line.strip().split(":", 1)[0]
+        distance = re.search(r"\[([\d.]+) m away\]", line)
+        if distance is None:
+            return f"{name} (in range)"
+        value = float(distance.group(1))
+        if value < nearest_distance:
+            nearest, nearest_distance = name, value
+    return f"{nearest} ({nearest_distance:.0f} m away)" if nearest else ""
 
 
 def _as_plan_response(entry: Any):

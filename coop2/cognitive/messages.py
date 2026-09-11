@@ -39,6 +39,28 @@ class MessageBroker:
         # Optional wrapper reference for state change notifications
         self.wrapper = None
     
+    def _confirm_interrupts(self, recipient_ids: List[str],
+                            actually_interrupted: List[str]) -> None:
+        """Tell each addressed team which of its members really were stopped."""
+        stopped = set(actually_interrupted)
+        seen: List = []
+        for recipient_id in recipient_ids:
+            recipient = self.agents.get(recipient_id)
+            if recipient is None:
+                continue
+            brain = getattr(recipient, "brain", None)
+            if brain is None or not hasattr(brain, "confirm_interrupts"):
+                continue
+            for known_brain, names in seen:
+                if known_brain is brain:
+                    if recipient_id in stopped:
+                        names.append(recipient_id)
+                    break
+            else:
+                seen.append((brain, [recipient_id] if recipient_id in stopped else []))
+        for brain, names in seen:
+            brain.confirm_interrupts(names)
+
     def _will_interrupt(self, recipient, message_record: Dict) -> bool:
         """Would delivering @message_record stop @recipient?
 
@@ -53,7 +75,11 @@ class MessageBroker:
             bool(metadata.get("interrupts_execution")) or message_type == "leader_broadcast"
         )
         is_repair_message = is_coop2_repair_message(message_record)
-        return (
+        # Must stay identical to the test in `_deliver`'s loop, `expected_reply`
+        # included. A prediction that is merely close over-counts, and the
+        # barrier then waits for a member the loop went on to skip.
+        is_expected_reply = bool(metadata.get("expected_reply"))
+        return not is_expected_reply and (
             recipient.state == AgentState.W
             or (recipient.state == AgentState.X
                 and (is_repair_message or is_execution_interrupt))
@@ -102,6 +128,7 @@ class MessageBroker:
         # actually interrupt -- a member in R is skipped here as it is below, so
         # the barrier does not wait for one that was never stopped.
         self._announce_interrupts(message_record, recipient_ids)
+        actually_interrupted: List[str] = []
 
         for recipient_id in recipient_ids:
             recipient = self.agents.get(recipient_id)
@@ -155,10 +182,22 @@ class MessageBroker:
                 or (recipient.state == AgentState.X and (is_repair_message or is_execution_interrupt))
             )
             if should_interrupt:
+                before = recipient.state
                 recipient.interrupt(timestamp, env_step)
+                if recipient.state is not before:
+                    actually_interrupted.append(recipient_id)
                 # Notify wrapper of state change if available
                 if self.wrapper is not None:
                     self.wrapper.notify_state_change()
+
+        # Narrow the announcement to what the loop actually did. The set before
+        # it is a prediction from each recipient's state, and the state can
+        # change in between: three members slipped from W back to R between the
+        # prediction and their turn in the loop, `interrupt()` is a no-op from
+        # R, and the one member that really was stopped then waited out the full
+        # 30 s for three that were never coming. A blocked member's poll picks
+        # the narrowing up and closes the barrier.
+        self._confirm_interrupts(recipient_ids, actually_interrupted)
 
     def register_team(self, team_name: str, member_ids: List[str]) -> None:
         """Declare @team_name as an addressable unit made of @member_ids."""
