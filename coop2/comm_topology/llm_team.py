@@ -593,7 +593,18 @@ class TeamBrain:
                 # First arrival of a new round: nobody has decided yet.
                 self._decided.clear()
             self._interrupted.add(agent_id)
-            complete = self._interrupted.issuperset(self.member_ids)
+            # Wait only for teammates that are actually *in* I. The barrier used
+            # to require every member, on the premise that "a message interrupts
+            # every member at once" -- and that premise is false: the broker
+            # interrupts an agent in W or X and skips one in R, and R is exactly
+            # where the member running the team's planning call sits. Measured
+            # on centralized_agents8_..._011122: the leader's request landed
+            # 2 ms into the run, caught agent_4/5/6 in W, missed agent_7 which
+            # was still reasoning, and the three blocked the world for the full
+            # 30 s timeout. A member that is not in I is not coming; and if it
+            # is in R the team is already planning, so a fresh plan is on its
+            # way for everyone and there is the less to decide.
+            complete = not self._outstanding()
             if complete:
                 started = time.time()
                 self._pending_decisions = self._decide_interrupts(messages)
@@ -611,15 +622,46 @@ class TeamBrain:
         # cannot deadlock the way the planning barrier could -- the message
         # interrupted every member at once, so they are all on their way here,
         # and nothing needs the world to advance in the meantime.
-        if self._decided.wait(timeout=INTERRUPT_BARRIER_TIMEOUT):
+        deadline = time.monotonic() + INTERRUPT_BARRIER_TIMEOUT
+        while time.monotonic() < deadline:
+            if self._decided.wait(timeout=0.05):
+                with self._lock:
+                    self._interrupted.discard(agent_id)
+                    return self._pending_decisions.pop(agent_id, None)
+            # A teammate this barrier was waiting for may have left I without
+            # ever arriving -- it was never interrupted, or its own wait timed
+            # out. Re-check rather than hold the world until the deadline.
             with self._lock:
-                self._interrupted.discard(agent_id)
-                return self._pending_decisions.pop(agent_id, None)
+                if not self._outstanding():
+                    started = time.time()
+                    self._pending_decisions = self._decide_interrupts(messages)
+                    self.timeline.append(
+                        {"kind": "deciding", "start": started, "end": time.time()}
+                    )
+                    self._decided.set()
+                    self._interrupted.discard(agent_id)
+                    return self._pending_decisions.pop(agent_id, None)
         print(f"  [{self.team_name}] waited {INTERRUPT_BARRIER_TIMEOUT:.0f}s for the team "
               f"to be interrupted and it never completed; resuming")
         with self._lock:
             self._interrupted.discard(agent_id)
         return None
+
+    def _outstanding(self) -> List[str]:
+        """Teammates still in I that have not reached the interrupt barrier.
+
+        Callers must hold ``_lock``.
+        """
+        from coop2.cognitive.agent.agent import AgentState  # noqa: PLC0415
+
+        pending = []
+        for name in self.member_ids:
+            if name in self._interrupted:
+                continue
+            member = self.members.get(name)
+            if member is not None and member.state is AgentState.I:
+                pending.append(name)
+        return pending
 
     def _decide_interrupts(self, messages: List[Dict]) -> Dict[str, Any]:
         members = [self.members[name] for name in self.member_ids if name in self.members]

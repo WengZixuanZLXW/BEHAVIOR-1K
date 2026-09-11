@@ -17,6 +17,7 @@ Run:
 from __future__ import annotations
 
 import os
+import time
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -161,7 +162,16 @@ def main() -> int:
     # that arrive early **block in I** rather than bouncing back to ready --
     # a member that bounced showed as "waiting" on the timeline while its
     # teammates were still interrupted, which is the bug this pins.
+    #
+    # The state has to be set, not assumed: the barrier waits for teammates that
+    # are *in* I, so a test that called handle_interrupt on agents still in R
+    # was testing a situation the broker never produces.
     import threading
+
+    from coop2.cognitive.agent.agent import AgentState
+
+    for name in ids:
+        agents[name]._set_state(AgentState.I, timestamp=0.0, env_step=0)
 
     barrier_state = {}
 
@@ -413,6 +423,40 @@ def main() -> int:
     assert plan.actions[0].action_type == "navigate_to", plan.actions[0].action_type
     assert client.plan_calls == 1, client.plan_calls
     ok("it blocks on the call in flight and comes back with the real plan")
+
+    print("test 13: a teammate that was never interrupted does not hold the barrier")
+    # The broker interrupts an agent in W or X and skips one in R -- and R is
+    # where the member running the team's planning call sits. The barrier used
+    # to require every member regardless, so on
+    # centralized_agents8_..._011122 a request that landed 2 ms into the run
+    # caught three members in W, missed the fourth still reasoning, and froze
+    # the world for the full 30 s timeout.
+    client, agents, ids = make_team(4)
+    for name in ids:
+        agents[name].plan = None
+    for name in ids[:3]:
+        agents[name]._set_state(AgentState.I, timestamp=0.0, env_step=0)
+    # ids[3] stays in R: it is the one doing the planning call.
+    assert agents[ids[3]].state is AgentState.R
+
+    done = {}
+
+    def arrive_late(name):
+        done[name] = agents[name].handle_interrupt()
+
+    threads = [threading.Thread(target=arrive_late, args=(name,)) for name in ids[:3]]
+    started = time.monotonic()
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5.0)
+    elapsed = time.monotonic() - started
+    assert not any(t.is_alive() for t in threads), (
+        "the three interrupted members blocked on a fourth that was never coming"
+    )
+    assert elapsed < 2.0, f"took {elapsed:.1f}s -- it waited on the timeout again"
+    assert client.interrupt_calls == 1, client.interrupt_calls
+    ok("three interrupted members decide without the one still reasoning")
 
     print("\nALL TESTS PASSED")
     return 0
